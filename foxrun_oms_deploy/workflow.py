@@ -1,4 +1,5 @@
 """FOXRUN operational workflow. Additive tables preserve the Phase 2 database."""
+import os
 import csv
 import io
 import json
@@ -454,6 +455,90 @@ def install(app, core):
                 # Prevent spreadsheet formula execution in exported customer-supplied text.
                 writer.writerow({k:("'"+v if isinstance(v,str) and v.startswith(('=','+','-','@','\t','\r')) else v) for k,v in out.items()})
         return StreamingResponse(iter(['\ufeff'+buff.getvalue()]),media_type='text/csv; charset=utf-8',headers={'Content-Disposition':'attachment; filename="foxrun_orders.csv"'})
+
+    @app.get('/api/wf/sample/orders.xlsx')
+    def sample_orders_xlsx():
+        from fastapi.responses import FileResponse
+        path = os.path.join(os.path.dirname(__file__), 'foxrun_order_sample.xlsx')
+        if not os.path.exists(path):
+            raise HTTPException(404, 'File mẫu không tìm thấy.')
+        return FileResponse(path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename='foxrun_order_sample.xlsx')
+
+    @app.get('/api/wf/sample/tracking.xlsx')
+    def sample_tracking_xlsx():
+        from fastapi.responses import FileResponse
+        path = os.path.join(os.path.dirname(__file__), 'foxrun_tracking_sample.xlsx')
+        if not os.path.exists(path):
+            raise HTTPException(404, 'File mẫu không tìm thấy.')
+        return FileResponse(path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename='foxrun_tracking_sample.xlsx')
+
+    @app.get('/api/wf/export-xlsx')
+    @app.get('/api/wf/orders/export-xlsx')
+    def export_xlsx(db=Depends(get_db),user=Depends(current_user)):
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Đơn hàng FOXRUN"
+
+        fields=['code','customer','tracking','cod','currency','stage','transport','finance','completed_at','returned_at','recipient','phone','full_address','province','district','postcode','country','sku','quantity']
+        headers_vn=['Mã đơn','Khách hàng','Mã vận đơn','Tiền COD','Tiền tệ','Trạng thái xử lý','Trạng thái giao','Đối soát','Ngày giao','Ngày hoàn','Người nhận','Điện thoại','Địa chỉ chi tiết','Tỉnh / Bang','Quận / Huyện','Mã bưu cục (Postcode)','Thị trường','SKU sản phẩm','Số lượng']
+
+        ws.append(headers_vn)
+        header_fill = PatternFill(start_color='001529', end_color='001529', fill_type='solid')
+        header_font = Font(name='Segoe UI', size=11, bold=True, color='FFFFFF')
+        data_font = Font(name='Segoe UI', size=10)
+        thin_border = Border(
+            left=Side(style='thin', color='D9D9D9'),
+            right=Side(style='thin', color='D9D9D9'),
+            top=Side(style='thin', color='D9D9D9'),
+            bottom=Side(style='thin', color='D9D9D9')
+        )
+
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+        for o in db.scalars(select(Order).order_by(Order.id)).all():
+            if management.is_deleted(db, o.id): continue
+            row=serialize(db,o,db.get(Flow,o.id))
+            for item in row['items'] or [{'sku':'','quantity':''}]:
+                out={k:row.get(k,'') for k in fields};out.update(item)
+                row_vals=[]
+                for k in fields:
+                    v=out.get(k,'')
+                    if k in {'cod','quantity'} and v not in ('', None):
+                        try:
+                            v = float(v) if k == 'cod' else int(v)
+                        except (ValueError, TypeError):
+                            pass
+                    elif isinstance(v,str) and v.startswith(('=','+','-','@','\t','\r')):
+                        v="'"+v
+                    row_vals.append(v)
+                ws.append(row_vals)
+
+        for row in ws.iter_rows(min_row=2, min_col=1, max_col=len(fields)):
+            for cell in row:
+                cell.font = data_font
+                cell.border = thin_border
+                cell.alignment = Alignment(vertical='center')
+
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 40)
+
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': 'attachment; filename="foxrun_orders.xlsx"'}
+        )
 
     # Put role validation on the inherited customer endpoints as well.
     @app.middleware('http')

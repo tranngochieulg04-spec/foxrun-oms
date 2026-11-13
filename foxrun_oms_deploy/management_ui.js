@@ -719,7 +719,7 @@ async function openPeriod(id) {
   const period = await api('/api/wf/periods/' + id);
   openModal(period.name,
     '<p>' + period.date_from + ' đến ' + period.date_to + ' · ' + period.total + ' đơn · ' + (period.state === 'CLOSED' ? 'Đã chốt' : 'Đang đối soát') + '</p>' +
-    periodTotals(period.totals) + '<div class="actions pad"><a href="/api/wf/periods/' + id + '/export"><button>Xuất bảng kê CSV</button></a>' +
+    periodTotals(period.totals) + '<div class="actions pad"><a href="/api/wf/periods/' + id + '/export-xlsx"><button class="primary small" style="background:#107c41;color:#fff;border-color:#107c41;font-weight:600">📊 Xuất Excel (.xlsx)</button></a><a href="/api/wf/periods/' + id + '/export"><button class="small">Xuất CSV</button></a>' +
     '<button id="openExpenseSheet">Bảng kê chi phí</button>' +
     (can('admin', 'finance') ? period.state === 'DRAFT' ?
       '<button class="primary" data-period-action="close">Chốt đợt đối soát</button><button class="danger" data-period-action="delete">Xóa đợt</button>' :

@@ -25,7 +25,7 @@ class Suggestion(BaseModel):
     note:str=Field(default='',max_length=1000)
 class AIConfigIn(BaseModel):
     api_key:str=Field(default='',max_length=500)
-    model:str=Field(default='gemini-1.5-flash',max_length=150)
+    model:str=Field(default='gemini-3.5-flash-lite',max_length=150)
 class AddressParseIn(BaseModel):
     text:str=Field(default='',max_length=4000)
     country:str=Field(default='MY',max_length=10)
@@ -62,7 +62,7 @@ def install(app,w):
 
     def config(db=None):
         key = os.environ.get('GEMINI_API_KEY','').strip()
-        model = os.environ.get('GEMINI_MODEL','gemini-1.5-flash').strip()
+        model = os.environ.get('GEMINI_MODEL','gemini-3.5-flash-lite').strip()
         if db:
             row_k = db.get(AIConfig, 'GEMINI_API_KEY')
             if row_k and row_k.value.strip(): key = row_k.value.strip()

@@ -350,6 +350,75 @@ def install(app, workflow, action_handler, claim_handler):
         return StreamingResponse(iter(['\ufeff'+buffer.getvalue()]), media_type='text/csv; charset=utf-8',
                                  headers={'Content-Disposition': 'attachment; filename="foxrun_period_'+str(pid)+'.csv"'})
 
+    @app.get('/api/wf/periods/{pid}/export-xlsx')
+    def export_period_xlsx(pid: int, db=Depends(w.get_db), user=Depends(w.current_user)):
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
+        period = db.get(Period, pid)
+        if not period:
+            raise HTTPException(404, 'Không tìm thấy đợt đối soát.')
+        result = period_result(db, period, include_rows=True)
+        columns = ['code', 'customer', 'tracking', 'completed_at', 'returned_at', 'currency', 'cod',
+                   'carrier_fee', 'service_fee', 'carrier_received', 'seller_paid', 'seller_balance']
+        headers_vn = ['Mã đơn', 'Khách hàng', 'Mã vận đơn', 'Ngày giao', 'Ngày hoàn', 'Tiền tệ', 'Tiền COD',
+                      'Phí vận chuyển', 'Phí dịch vụ FOXRUN', 'Hãng thực chuyển', 'Đã trả Seller', 'Số dư Seller']
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = f"Đối soát #{pid}"
+        ws.append(headers_vn)
+
+        header_fill = PatternFill(start_color='001529', end_color='001529', fill_type='solid')
+        header_font = Font(name='Segoe UI', size=11, bold=True, color='FFFFFF')
+        data_font = Font(name='Segoe UI', size=10)
+        thin_border = Border(
+            left=Side(style='thin', color='D9D9D9'),
+            right=Side(style='thin', color='D9D9D9'),
+            top=Side(style='thin', color='D9D9D9'),
+            bottom=Side(style='thin', color='D9D9D9')
+        )
+
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+        for row in result['orders']:
+            row_vals = []
+            for k in columns:
+                v = row.get(k, '')
+                if k in {'cod', 'carrier_fee', 'service_fee', 'carrier_received', 'seller_paid', 'seller_balance'} and v not in ('', None):
+                    try:
+                        v = float(v)
+                    except (ValueError, TypeError):
+                        pass
+                elif isinstance(v, str) and v.startswith(('=', '+', '-', '@')):
+                    v = "'" + v
+                row_vals.append(v)
+            ws.append(row_vals)
+
+        for row in ws.iter_rows(min_row=2, min_col=1, max_col=len(columns)):
+            for cell in row:
+                cell.font = data_font
+                cell.border = thin_border
+                cell.alignment = Alignment(vertical='center')
+
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 35)
+
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': f'attachment; filename="foxrun_period_{pid}.xlsx"'}
+        )
+
 
 def ensure_customer_active(db, customer_id):
     if db.get(DeletedCustomer, customer_id):
