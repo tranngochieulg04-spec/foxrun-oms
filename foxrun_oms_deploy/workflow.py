@@ -605,7 +605,7 @@ def install(app, core):
     # Replace the existing homepage route without changing old read APIs.
     for route in list(app.router.routes):
         if getattr(route,'path',None)=='/':app.router.routes.remove(route)
-    @app.get('/',response_class=HTMLResponse)
+    @app.api_route('/', methods=['GET', 'HEAD'], response_class=HTMLResponse)
     def homepage():return Path(__file__).with_name('workflow.html').read_text(encoding='utf-8')
 
     @app.get('/management-ui.js')

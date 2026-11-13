@@ -10,9 +10,16 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
 from pwdlib import PasswordHash
 from openpyxl import load_workbook
 
-DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///./foxrun_dev.db')
+DATABASE_URL = (os.getenv('DATABASE_URL') or os.environ.get('DATABASE_URL') or '').strip()
+if not DATABASE_URL:
+    DATABASE_URL = 'sqlite:///./data/foxrun.db'
+
 if DATABASE_URL.startswith('postgres://'):
     DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
+if 'sslmode=' not in DATABASE_URL and ('neon.tech' in DATABASE_URL or 'supabase' in DATABASE_URL):
+    separator = '&' if '?' in DATABASE_URL else '?'
+    DATABASE_URL = f"{DATABASE_URL}{separator}sslmode=require"
 
 if DATABASE_URL.startswith('sqlite'):
     engine = create_engine(
@@ -36,6 +43,9 @@ else:
         pool_pre_ping=True,
         pool_recycle=300
     )
+    print("=" * 65)
+    print("Connected to PostgreSQL (Neon)")
+    print("=" * 65)
 
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
