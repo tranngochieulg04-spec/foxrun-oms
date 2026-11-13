@@ -475,8 +475,8 @@ async def commit(file:UploadFile=File(...),db:Session=Depends(get_db),user:User=
         db.rollback();raise
     return {'batch_id':batch.id,'rows':batch.rows,'created':batch.created,'existing':batch.updated}
 
-@app.get('/api/health')
-@app.get('/api/v1/health')
+@app.api_route('/api/health', methods=['GET', 'HEAD'])
+@app.api_route('/api/v1/health', methods=['GET', 'HEAD'])
 def health(db: Session = Depends(get_db)):
     try:
         db.execute(select(1))
@@ -484,7 +484,7 @@ def health(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(503, f'Database check failed: {e}')
 
-@app.get('/',response_class=HTMLResponse)
+@app.api_route('/', methods=['GET', 'HEAD'], response_class=HTMLResponse)
 def home():
     with open('index.html',encoding='utf-8') as f:return f.read()
 
