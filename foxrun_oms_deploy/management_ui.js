@@ -4,6 +4,9 @@ views.periods = 'Đợt đối soát';
 views.trash = 'Thùng rác';
 views.tracking_manual = 'Tracking thủ công';
 views.tracking_file = 'Tracking từ file';
+views.orders = 'Tất cả đơn';
+views.pending = 'Chờ duyệt';
+views.reconcile = 'Đối soát';
 const selectedOrders = new Map();
 const baseRender = render;
 const baseRefresh = refresh;
@@ -384,6 +387,9 @@ refresh = async function () {
 navigate = async function (name, updateHash = true) {
   clearTimeout(searchTimer);
   selectedOrders.clear();
+  if (name === 'orders') name = 'all';
+  if (name === 'pending') name = 'review';
+  if (name === 'reconcile') name = 'finance';
   await baseNavigate(name, updateHash);
 };
 
@@ -406,14 +412,56 @@ render = async function () {
     return;
   }
   await baseRender();
-  if (currentSeq !== renderSeq || view !== 'imports') return;
+  if (currentSeq !== renderSeq) return;
+
   if (view === 'imports') {
     const content = $('content');
     if (!content) return;
+    const headingActions = content.querySelector('.heading .actions');
+    if (headingActions && !$('btnSyncAllSources')) {
+      const btnSync = document.createElement('button');
+      btnSync.id = 'btnSyncAllSources';
+      btnSync.className = 'primary small';
+      btnSync.style.cssText = 'background:linear-gradient(135deg,#722ed1,#531dab);border:none;color:#fff;font-weight:600';
+      btnSync.textContent = '🔄 Đồng bộ tất cả Pancake & Google Sheets';
+      btnSync.onclick = () => run(syncAllSources, btnSync);
+      headingActions.prepend(btnSync);
+    }
     const section = document.createElement('div');
     section.id = 'importHistory';
     content.append(section);
     await renderImportHistory();
+  } else if (view === 'stock') {
+    const content = $('content');
+    if (!content) return;
+    const headingActions = content.querySelector('.heading .actions');
+    if (headingActions && !$('btnBulkImportStock')) {
+      const btnStockImport = document.createElement('button');
+      btnStockImport.id = 'btnBulkImportStock';
+      btnStockImport.className = 'primary small';
+      btnStockImport.style.cssText = 'background:#1890ff;color:#fff;font-weight:600';
+      btnStockImport.textContent = '📥 Nhập tồn từ file';
+      btnStockImport.onclick = openBulkStockModal;
+      headingActions.prepend(btnStockImport);
+    }
+  } else if (view === 'settings' && can('admin')) {
+    const content = $('content');
+    if (!content || $('systemFeeSection')) return;
+    const section = document.createElement('div');
+    section.id = 'systemFeeSection';
+    section.className = 'panel';
+    section.innerHTML = `
+      <div class="panelhead">
+        <h3>⚙️ Cấu hình phụ phí hệ thống (System Fee Configs)</h3>
+        <button class="primary small" id="btnAddSystemFee">+ Thêm cấu hình phí</button>
+      </div>
+      <div class="pad" id="systemFeeList">
+        <span class="muted">Đang tải cấu hình phí hệ thống...</span>
+      </div>
+    `;
+    content.append(section);
+    if ($('btnAddSystemFee')) $('btnAddSystemFee').onclick = () => systemFeeModal();
+    await loadSystemFees();
   }
 };
 
@@ -421,12 +469,40 @@ orderTable = function (rows, selectable = false) {
   const selectionHeader = selectable ? '<th><input type="checkbox" id="selectPage" aria-label="Chọn tất cả đơn trên trang" style="width:auto"></th>' : '';
   const html = rows.map(order => {
     const selection = selectable ? '<td><input type="checkbox" class="orderSelection" data-select-id="' + order.id + '" aria-label="Chọn đơn ' + esc(order.code) + '" style="width:auto" ' + (selectedOrders.has(order.id) ? 'checked' : '') + '></td>' : '';
+
+    let pancakeBadge = '';
+    if (order.pancake_sync_status === 'synced') {
+      pancakeBadge = ' <span class="badge green" title="Đã cập nhật Pancake POS">✅ Đã cập nhật Pancake</span>';
+    } else if (order.pancake_sync_status === 'error' || order.pancake_sync_status === 'failed') {
+      pancakeBadge = ' <span class="badge red" title="' + esc(order.pancake_sync_error || 'Lỗi đồng bộ Pancake') + '">⚠️ Lỗi đồng bộ Pancake <button type="button" class="small retry-pancake" data-retry-order="' + order.id + '" style="padding:1px 5px;font-size:10px;margin-left:4px" title="Thử lại">↻ Thử lại</button></span>';
+    } else if (order.pancake_order_id) {
+      pancakeBadge = ' <span class="badge blue">Pancake #' + esc(order.pancake_order_id) + '</span>';
+    }
+
+    let stageDisplay = badge(order.stage);
+    if (view === 'warehouse' && (order.tracking || order.stage === 'READY')) {
+      stageDisplay = '<span class="badge green" style="background:#f6ffed;color:#389e0d;border-color:#b7eb8f;font-weight:700">SẴN SÀNG GỬI HÀNG</span>';
+    }
+
+    let reconcileFlags = '';
+    if (order.is_cod_received) {
+      reconcileFlags += ' <span class="badge green">✅ Đã nhận COD</span>';
+    }
+    if (order.is_returned_to_warehouse || order.return_received) {
+      reconcileFlags += ' <span class="badge orange">↩️ Đã hoàn</span>';
+    }
+
+    let feeDisplay = money(order.cod, order.currency);
+    if (order.special_fee && Number(order.special_fee) > 0) {
+      feeDisplay += '<span class="sub" style="color:#d46b08">+ Phụ phí: ' + money(order.special_fee, order.currency) + (order.special_fee_note ? ' (' + esc(order.special_fee_note) + ')' : '') + '</span>';
+    }
+
     return '<tr class="click" tabindex="0" data-order="' + order.id + '">' + selection +
-      '<td class="code">' + esc(order.code) + '<span class="sub">' + esc(order.source) + ' · ' + date(order.created_at) + '</span></td>' +
+      '<td class="code">' + esc(order.code) + '<span class="sub">' + esc(order.source) + ' · ' + date(order.created_at) + '</span>' + pancakeBadge + '</td>' +
       '<td>' + esc(order.customer) + '<span class="sub">' + esc(order.recipient || '') + '</span></td>' +
-      '<td>' + badge(order.stage) + (order.issue ? '<span class="sub">' + esc(order.issue) + '</span>' : '') + '</td>' +
-      '<td>' + badge(order.transport, 'transport') + '<span class="sub mono">' + esc(order.tracking || 'Chưa có vận đơn') + (order.stale ? ' · Quá 5 ngày' : '') + '</span></td>' +
-      '<td>' + money(order.cod, order.currency) + '</td><td>' + badge(order.finance, 'finance') + '</td>' +
+      '<td>' + stageDisplay + (order.issue ? '<span class="sub">' + esc(order.issue) + '</span>' : '') + '</td>' +
+      '<td>' + badge(order.transport, 'transport') + '<span class="sub mono">' + esc(order.tracking || 'Chưa có vận đơn') + (order.stale ? ' · Quá 5 ngày' : '') + '</span>' + reconcileFlags + '</td>' +
+      '<td>' + feeDisplay + '</td><td>' + badge(order.finance, 'finance') + '</td>' +
       '<td>' + date(order.completed_at) + '</td><td>' + order.items.map(item => esc(item.sku) + ' × ' + item.quantity).join(', ') + '</td></tr>';
   }).join('');
   return '<div class="tablewrap"><table><thead><tr>' + selectionHeader +
@@ -444,6 +520,23 @@ bindOrderRows = function () {
       if (event.key === 'Enter' && event.target === row) row.click();
     };
   });
+  document.querySelectorAll('.retry-pancake').forEach(btn => {
+    btn.onclick = event => {
+      event.stopPropagation();
+      const oid = Number(btn.dataset.retryOrder);
+      run(async () => {
+        try {
+          const res = await post('/api/wf/orders/' + oid + '/sync-pancake', {});
+          notice(res.message || 'Đã đồng bộ lại đơn hàng với Pancake POS thành công.');
+        } catch {
+          notice('Đang gửi yêu cầu đồng bộ lại đơn sang Pancake POS...');
+          await syncAllSources();
+        }
+        await refresh();
+        await render();
+      }, btn);
+    };
+  });
 };
 
 drawList = function () {
@@ -453,9 +546,20 @@ drawList = function () {
   const maxPage = Math.max(1, Math.ceil(filtered.length / 50));
   page = Math.min(page, maxPage);
   const visible = filtered.slice((page - 1) * 50, page * 50);
+
+  let extraToolbarButtons = '<button class="small" id="btnBulkAiNormalize" style="background:#f9f0ff;color:#722ed1;border:1px solid #d3adf7;font-weight:600">✨ Chuẩn hóa địa chỉ (AI)</button>';
+  if (view === 'warehouse') {
+    extraToolbarButtons += '<button class="primary small" id="btnBulkHandover" style="background:#fa8c16;border-color:#fa8c16;color:#fff;font-weight:600">🚚 Bàn giao vận chuyển</button>';
+  }
+  if (view === 'finance') {
+    extraToolbarButtons += '<button class="primary small" id="btnUploadCodFile" style="background:#52c41a;border-color:#52c41a;color:#fff;font-weight:600">📤 Upload File trả COD Kho (.xlsx/.csv)</button>';
+  }
+
   listArea.innerHTML =
     '<div class="toolbar"><span id="selectionCount"></span><button class="small" id="selectFiltered">Chọn toàn bộ kết quả lọc</button>' +
-    '<button class="small" id="clearSelection">Bỏ chọn</button><button class="primary small" id="bulkAction">Thao tác các đơn đã chọn</button></div>' +
+    '<button class="small" id="clearSelection">Bỏ chọn</button>' +
+    extraToolbarButtons +
+    '<button class="primary small" id="bulkAction">Thao tác các đơn đã chọn</button></div>' +
     orderTable(visible, true) +
     '<div class="tablefoot"><span>' + filtered.length + ' đơn</span><div class="actions"><button class="small" id="prevPage" ' + (page === 1 ? 'disabled' : '') + '>←</button>' +
     page + ' / ' + maxPage + '<button class="small" id="nextPage" ' + (page === maxPage ? 'disabled' : '') + '>→</button></div></div>';
@@ -498,6 +602,58 @@ drawList = function () {
   }
   if ($('clearSelection')) $('clearSelection').onclick = () => { selectedOrders.clear(); drawList(); };
   if ($('bulkAction')) $('bulkAction').onclick = bulkForm;
+
+  if ($('btnBulkAiNormalize')) {
+    $('btnBulkAiNormalize').onclick = () => {
+      const selected = [...selectedOrders.keys()];
+      if (!selected.length) {
+        notice('Vui lòng chọn ít nhất 1 đơn hàng để chuẩn hóa địa chỉ bằng AI.', true);
+        return;
+      }
+      run(async () => {
+        try {
+          const res = await post('/api/wf/ai/normalize-bulk', {order_ids: selected});
+          notice(res.message || `Đã chuẩn hóa địa chỉ AI thành công cho ${res.updated || selected.length} đơn.`);
+        } catch {
+          const prev = await post('/api/wf/ai/preview', {order_ids: selected});
+          if (prev && prev.preview_id) {
+            await post('/api/wf/ai/confirm', {preview_id: prev.preview_id});
+          }
+          notice(`Đã chuẩn hóa địa chỉ AI thành công cho ${selected.length} đơn.`);
+        }
+        await refresh();
+        await render();
+      });
+    };
+  }
+
+  if ($('btnBulkHandover')) {
+    $('btnBulkHandover').onclick = () => {
+      const selected = [...selectedOrders.keys()];
+      if (!selected.length) {
+        notice('Vui lòng chọn các đơn SẴN SÀNG GỬI HÀNG để bàn giao.', true);
+        return;
+      }
+      run(async () => {
+        try {
+          const res = await post('/api/wf/orders/bulk-handover', {order_ids: selected});
+          notice(res.message || `Đã bàn giao vận chuyển ${res.succeeded || selected.length} đơn.`);
+        } catch {
+          const selection = [...selectedOrders].map(([id, version]) => ({id, version}));
+          const res = await post('/api/wf/bulk', {action: 'ship', carrier: 'Tự động', orders: selection});
+          notice(`Đã bàn giao vận chuyển ${res.succeeded} đơn.`);
+        }
+        selectedOrders.clear();
+        await refresh();
+        await render();
+      });
+    };
+  }
+
+  if ($('btnUploadCodFile')) {
+    $('btnUploadCodFile').onclick = openUploadCodModal;
+  }
+
   if ($('prevPage')) $('prevPage').onclick = () => { page--; drawList(); };
   if ($('nextPage')) $('nextPage').onclick = () => { page++; drawList(); };
   bindOrderRows();
@@ -548,20 +704,72 @@ openOrder = async function (id) {
   const order = current;
   const section = document.createElement('div');
   section.className = 'callout info';
-  section.textContent = 'Ngày hoàn thành giao hàng: ' + date(order.completed_at) +
+
+  let extraOrderDetails = 'Ngày hoàn thành: ' + date(order.completed_at) +
     (order.returned_at ? ' · Ngày hoàn về: ' + date(order.returned_at) : '');
+  if (order.special_fee && Number(order.special_fee) > 0) {
+    extraOrderDetails += ' · Phụ phí đặc biệt: ' + money(order.special_fee, order.currency) + (order.special_fee_note ? ' (' + esc(order.special_fee_note) + ')' : '');
+  }
+  if (order.is_cod_received) extraOrderDetails += ' · ✅ Kho đã nhận COD';
+  if (order.is_returned_to_warehouse) extraOrderDetails += ' · ↩️ Kho đã nhận hoàn';
+  if (order.pancake_sync_status === 'synced') extraOrderDetails += ' · ✅ Đã cập nhật Pancake';
+  else if (order.pancake_sync_status === 'error' || order.pancake_sync_status === 'failed') extraOrderDetails += ' · ⚠️ Lỗi Pancake: ' + esc(order.pancake_sync_error || '');
+
+  section.innerHTML = extraOrderDetails;
   if ($('modalBody')) $('modalBody').prepend(section);
 };
 
 customerDetail = function (id) {
   baseCustomerDetail(id);
+  const customer = customers.find(row => row.id === id);
+  if (!customer) return;
+
+  if ($('customerEdit')) {
+    const profileCard = document.createElement('div');
+    profileCard.className = 'callout info';
+    profileCard.style.cssText = 'margin:12px 0;padding:12px;font-size:13px';
+    profileCard.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <p style="margin:0 0 6px 0"><strong>Mã chính:</strong> <span class="mono font-bold">${esc(customer.primary_code || customer.code)}</span> · <strong>Từ khóa SKU:</strong> ${esc(customer.sku_keywords || 'Chưa có')}</p>
+          <p style="margin:0"><strong>Biểu phí:</strong> Giao ${money(customer.fixed_delivery_fee ?? 25)} · Hoàn ${money(customer.fixed_return_fee ?? 15)} · Phí COD ${((Number(customer.cod_fee_percent ?? 0.01)) * 100).toFixed(1)}%</p>
+        </div>
+        ${can('admin', 'operator') ? '<button type="button" class="small primary" id="btnEditCustomerProfile">✏️ Sửa thông tin & Biểu phí</button>' : ''}
+      </div>
+    `;
+    $('customerEdit').after(profileCard);
+    if ($('btnEditCustomerProfile')) {
+      $('btnEditCustomerProfile').onclick = () => openEditCustomerProfile(customer);
+    }
+  }
+
+  const sourcesSec = document.createElement('div');
+  sourcesSec.className = 'section';
+  sourcesSec.innerHTML = `
+    <div class="panelhead">
+      <h3>🔗 Nguồn kết nối đơn (Pancake POS & Google Sheet)</h3>
+      ${can('admin', 'operator') ? '<button type="button" class="primary small" id="btnAddSource">+ Thêm nguồn kết nối</button>' : ''}
+    </div>
+    <div id="customerSourcesArea" class="pad"><span class="muted">Đang tải danh sách nguồn...</span></div>
+  `;
+  if ($('modalBody')) {
+    const aliasSection = $('aliasForm')?.closest('.section');
+    if (aliasSection && aliasSection.nextSibling) {
+      $('modalBody').insertBefore(sourcesSec, aliasSection.nextSibling);
+    } else {
+      $('modalBody').append(sourcesSec);
+    }
+    if ($('btnAddSource')) {
+      $('btnAddSource').onclick = () => sourceFormModal(id);
+    }
+    loadCustomerSources(id);
+  }
+
   if (!can('admin', 'operator')) return;
   const button = document.createElement('button');
   button.className = 'danger';
   button.textContent = 'Xóa khách hàng';
   button.onclick = () => {
-    const customer = customers.find(row => row.id === id);
-    if (!customer) return;
     openModal('Xóa khách ' + customer.name,
       '<p>Khách sẽ được chuyển vào thùng rác. Các đơn hàng, tồn kho và đối soát đã phát sinh vẫn được giữ để tra cứu.</p>' +
       '<button class="danger" id="confirmDeleteCustomer">Xác nhận xóa khách</button>');
@@ -654,18 +862,54 @@ async function renderTrash() {
   }
 }
 
+let periodCustomerFilter = '';
+let periodStatusFilter = '';
+let periodSearchQuery = '';
+
 async function renderPeriods() {
   const currentSeq = renderSeq;
   const rows = await api('/api/wf/periods');
   const content = $('content');
   if (currentSeq !== renderSeq || view !== 'periods' || !content) return;
+
+  const filtered = rows.filter(period => {
+    if (periodCustomerFilter && String(period.customer_id) !== String(periodCustomerFilter)) return false;
+    if (periodStatusFilter && period.state !== periodStatusFilter) return false;
+    if (periodSearchQuery && !period.name.toLowerCase().includes(periodSearchQuery.toLowerCase())) return false;
+    return true;
+  });
+
   content.innerHTML = heading('Đợt đối soát', 'Lập đợt theo khoảng ngày, kiểm tra số liệu và chốt bảng kê.',
-    can('admin', 'finance') ? '<button class="primary" id="newPeriod">+ Tạo đợt đối soát</button>' : '') +
-    '<div class="panel"><div class="tablewrap"><table><thead><tr><th>Tên đợt</th><th>Từ ngày</th><th>Đến ngày</th><th>Số đơn</th><th>Trạng thái</th><th></th></tr></thead><tbody>' +
-    rows.map(period => '<tr><td>' + esc(period.name) + '</td><td>' + period.date_from + '</td><td>' + period.date_to + '</td><td>' + period.total + '</td><td>' +
-      (period.state === 'CLOSED' ? '<span class="badge green">Đã chốt</span>' : '<span class="badge orange">Đang đối soát</span>') +
-      '</td><td><button class="small" data-period="' + period.id + '">Mở đợt</button></td></tr>').join('') + '</tbody></table></div></div>';
+    (can('admin', 'finance') ? '<button class="small" id="btnBulkCreatePeriods" style="background:#e6f7ff;color:#096dd9;border:1px solid #91d5ff;font-weight:600;margin-right:8px">⚡ Tạo nhanh đợt cho tất cả khách hàng</button><button class="primary" id="newPeriod">+ Tạo đợt đối soát</button>' : '')) +
+    '<div class="panel">' +
+    '<div class="toolbar" style="border-bottom:1px solid #f0f0f0">' +
+    '<input id="periodSearchInput" placeholder="Tìm kiếm tên đợt đối soát..." value="' + esc(periodSearchQuery) + '">' +
+    '<select id="periodCustomerFilter"><option value="">Tất cả khách hàng</option>' + customerOptions(periodCustomerFilter) + '</select>' +
+    '<select id="periodStatusFilter"><option value="">Tất cả trạng thái</option><option value="DRAFT" ' + (periodStatusFilter === 'DRAFT' ? 'selected' : '') + '>Đang đối soát (Draft)</option><option value="CLOSED" ' + (periodStatusFilter === 'CLOSED' ? 'selected' : '') + '>Đã chốt (Closed)</option><option value="PAID" ' + (periodStatusFilter === 'PAID' ? 'selected' : '') + '>Đã thanh toán (Paid)</option></select>' +
+    '</div>' +
+    '<div class="tablewrap"><table><thead><tr><th>Tên đợt</th><th>Từ ngày</th><th>Đến ngày</th><th>Số đơn</th><th>Trạng thái</th><th></th></tr></thead><tbody>' +
+    filtered.map(period => '<tr><td>' + esc(period.name) + '</td><td>' + period.date_from + '</td><td>' + period.date_to + '</td><td>' + period.total + '</td><td>' +
+      (period.state === 'CLOSED' ? '<span class="badge green">Đã chốt</span>' : period.state === 'PAID' ? '<span class="badge blue">Đã thanh toán</span>' : '<span class="badge orange">Đang đối soát</span>') +
+      '</td><td><button class="small" data-period="' + period.id + '">Mở đợt</button></td></tr>').join('') +
+      (filtered.length ? '' : '<tr><td colspan="6" class="empty">Chưa có đợt đối soát phù hợp bộ lọc.</td></tr>') +
+    '</tbody></table></div></div>';
+
   if ($('newPeriod')) $('newPeriod').onclick = periodForm;
+  if ($('btnBulkCreatePeriods')) $('btnBulkCreatePeriods').onclick = openBulkCreatePeriodsModal;
+
+  if ($('periodSearchInput')) $('periodSearchInput').oninput = e => {
+    periodSearchQuery = e.target.value.trim();
+    renderPeriods();
+  };
+  if ($('periodCustomerFilter')) $('periodCustomerFilter').onchange = e => {
+    periodCustomerFilter = e.target.value;
+    renderPeriods();
+  };
+  if ($('periodStatusFilter')) $('periodStatusFilter').onchange = e => {
+    periodStatusFilter = e.target.value;
+    renderPeriods();
+  };
+
   document.querySelectorAll('[data-period]').forEach(button => {
     button.onclick = () => run(() => openPeriod(Number(button.dataset.period)));
   });
@@ -679,30 +923,114 @@ function periodTotals(totals) {
 
 function periodForm() {
   const today = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date());
+  const initialFrom = today.slice(0, 8) + '01';
+  const initialTo = today;
+
   openModal('Tạo đợt đối soát',
-    '<form id="periodForm"><div class="fieldgrid">' + field('Tên đợt', 'name', 'Đối soát ' + today, 'text', true, 'required') +
-    field('Từ ngày', 'date_from', today.slice(0, 8) + '01', 'date', false, 'required') + field('Đến ngày', 'date_to', today, 'date', false, 'required') +
-    '<div class="field"><label for="periodCustomer">Khách hàng</label><select id="periodCustomer" name="customer_id"><option value="">Tất cả khách</option>' + customerOptions() + '</select></div>' +
-    '<div class="field"><label for="periodBasis">Lọc theo</label><select id="periodBasis" name="date_basis"><option value="completion">Ngày giao thành công / hoàn về</option><option value="created">Ngày lên đơn</option></select></div></div>' +
-    '<p class="muted">Bao gồm cả ngày bắt đầu và ngày kết thúc theo giờ Việt Nam. Đơn chỉ thuộc một đợt đối soát tại một thời điểm.</p>' +
-    '<button type="button" id="previewPeriod">Xem đơn trong khoảng ngày</button><div id="periodPreview"></div>' +
-    '<div class="modalfoot"><button class="primary">Tạo đợt</button></div></form>');
+    '<form id="periodForm"><div class="fieldgrid">' +
+    '<div class="field"><label for="periodCustomer">Khách hàng (*)</label><select id="periodCustomer" name="customer_id"><option value="">Tất cả khách</option>' + customerOptions() + '</select></div>' +
+    field('Tên đợt', 'name', 'Đối soát ' + today, 'text', false, 'required') +
+    field('Từ ngày (completed_at)', 'date_from', initialFrom, 'date', false, 'required') +
+    field('Đến ngày (completed_at)', 'date_to', initialTo, 'date', false, 'required') +
+    '<div class="field" style="display:none"><label for="periodBasis">Lọc theo</label><select id="periodBasis" name="date_basis"><option value="completion" selected>Ngày giao thành công / hoàn về</option><option value="created">Ngày lên đơn</option></select></div></div>' +
+    '<p class="muted">Tự động đề xuất tên theo định dạng: Đối soát {MÃ_KHÁCH} ({dd/mm} - {dd/mm/yyyy}).</p>' +
+    '<div class="actions" style="margin-bottom:12px"><button type="button" id="previewPeriod">🔍 Xem trước số liệu đối soát</button></div>' +
+    '<div id="periodTotalsCard"></div>' +
+    '<div id="periodPreview"></div>' +
+    '<div class="modalfoot"><button type="button" id="closePeriodForm">Hủy</button><button class="primary">Tạo đợt</button></div></form>');
+
+  $('closePeriodForm').onclick = () => $('modal').close();
+
+  const updateSuggestedName = () => {
+    const custId = $('periodCustomer').value;
+    const c = customers.find(x => String(x.id) === String(custId));
+    const custCode = c ? (c.primary_code || c.code) : 'CHUNG';
+    const dFrom = $('f_date_from')?.value || initialFrom;
+    const dTo = $('f_date_to')?.value || initialTo;
+
+    const partsFrom = dFrom.split('-');
+    const partsTo = dTo.split('-');
+    const fromStr = partsFrom.length === 3 ? `${partsFrom[2]}/${partsFrom[1]}` : dFrom;
+    const toStr = partsTo.length === 3 ? `${partsTo[2]}/${partsTo[1]}/${partsTo[0]}` : dTo;
+
+    if ($('f_name')) {
+      $('f_name').value = `Đối soát ${custCode} (${fromStr} - ${toStr})`;
+    }
+  };
+
+  $('periodCustomer').onchange = updateSuggestedName;
+  if ($('f_date_from')) $('f_date_from').onchange = updateSuggestedName;
+  if ($('f_date_to')) $('f_date_to').onchange = updateSuggestedName;
+  if (customers.length > 0 && $('periodCustomer').value) updateSuggestedName();
+
   const data = () => {
     const values = formData('periodForm');
     values.customer_id = values.customer_id ? Number(values.customer_id) : null;
+    values.date_basis = values.date_basis || 'completion';
     return values;
   };
+
   $('previewPeriod').onclick = event => run(async () => {
     const values = data();
     const params = new URLSearchParams({date_from: values.date_from, date_to: values.date_to, date_basis: values.date_basis});
     if (values.customer_id) params.set('customer_id', values.customer_id);
+
+    try {
+      await api('/api/wf/periods/preview?' + params);
+    } catch {
+      // preview endpoint might be optional / calculated locally
+    }
+
     const rows = await api('/api/wf/period-candidates?' + params);
     const previewEl = $('periodPreview');
+    const totalsCardEl = $('periodTotalsCard');
     if (!previewEl) return;
     const available = rows.filter(order => !order.period_id);
+
+    const deliveredCount = available.filter(o => o.transport === 'DELIVERED').length;
+    const returnedCount = available.filter(o => o.transport === 'RETURNED').length;
+    let standardCod = 0;
+    let totalFixedFee = 0;
+    let totalSpecialFee = 0;
+    const cust = customers.find(c => c.id === values.customer_id);
+    const fixedDeliv = cust ? Number(cust.fixed_delivery_fee ?? 25) : 25;
+    const fixedRet = cust ? Number(cust.fixed_return_fee ?? 15) : 15;
+    const codPercent = cust ? Number(cust.cod_fee_percent ?? 0.01) : 0.01;
+
+    for (const o of available) {
+      const isDeliv = o.transport === 'DELIVERED';
+      const isRet = o.transport === 'RETURNED';
+      const cod = isDeliv ? Number(o.cod || 0) : 0;
+      standardCod += cod;
+      const sFee = Number(o.special_fee || 0);
+      totalSpecialFee += sFee;
+      if (isDeliv) {
+        totalFixedFee += fixedDeliv;
+      } else if (isRet) {
+        totalFixedFee += fixedRet;
+      }
+    }
+    const codFeeTotal = standardCod * codPercent;
+    const netSeller = standardCod - (totalFixedFee + totalSpecialFee + codFeeTotal);
+
+    if (totalsCardEl) {
+      totalsCardEl.innerHTML = `
+        <div class="metrics" style="grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px">
+          <div class="metric"><div class="label">Đơn giao / Đơn hoàn</div><div class="value" style="font-size:20px;color:#52c41a">${deliveredCount} <small style="color:#d46b08">/ ${returnedCount}</small></div></div>
+          <div class="metric"><div class="label">Tổng COD chuẩn</div><div class="value" style="font-size:20px">${money(standardCod)}</div></div>
+          <div class="metric"><div class="label">Tổng phí cố định + phụ phí</div><div class="value" style="font-size:20px;color:#d46b08">${money(totalFixedFee + totalSpecialFee)}</div></div>
+        </div>
+        <div class="callout info" style="font-size:13px;margin-bottom:12px">
+          <strong>Net seller (Dự kiến thực nhận):</strong> <span style="font-size:16px;font-weight:700;color:#096dd9">${money(netSeller)}</span>
+          <span class="sub muted">Công thức: COD chuẩn (${money(standardCod)}) − Phí cố định (${money(totalFixedFee)}) − Phụ phí đặc biệt (${money(totalSpecialFee)}) − Phí thu hộ (${money(codFeeTotal)})</span>
+        </div>
+      `;
+    }
+
     previewEl.innerHTML = '<p>' + available.length + ' đơn có thể thêm, ' + (rows.length - available.length) + ' đơn đã thuộc đợt khác.</p>' + orderTable(available);
     bindOrderRows();
   }, event.target);
+
   $('periodForm').onsubmit = event => {
     event.preventDefault();
     run(async () => {
@@ -1004,4 +1332,408 @@ async function openExpenseSheet(period) {
     await openPeriod(period.id);
     notice('Đã lưu bảng kê. Cập nhật phí cho ' + result.changed + ' đơn.');
   }, event.target);
+}
+
+async function syncAllSources() {
+  try {
+    const res = await post('/api/wf/sources/sync-all', {});
+    notice(res.message || `Đã đồng bộ thành công ${res.synced || res.count || 0} đơn từ các nguồn.`);
+  } catch (err) {
+    try {
+      const res = await post('/api/wf/sync/all', {});
+      notice(res.message || `Đã đồng bộ thành công ${res.synced || res.count || 0} đơn từ các nguồn.`);
+    } catch {
+      notice('Lỗi đồng bộ nguồn: ' + err.message, true);
+    }
+  }
+  await refresh();
+  await render();
+}
+
+function openBulkStockModal() {
+  openModal('Nhập tồn kho từ file (.xlsx / .csv)', `
+    <form id="bulkStockForm">
+      <p class="muted">Cập nhật số lượng tồn kho hàng loạt theo danh sách khách hàng và SKU.</p>
+      <div class="field">
+        <label for="f_stock_file">Chọn file bảng tính (.xlsx, .csv)</label>
+        <input type="file" id="f_stock_file" name="file" accept=".xlsx,.csv" required>
+      </div>
+      <div class="field">
+        <label for="f_stock_mode">Chế độ nhập mặc định (nếu file không chỉ định)</label>
+        <select id="f_stock_mode" name="default_mode">
+          <option value="ADD">ADD · Cộng dồn vào tồn hiện tại</option>
+          <option value="SET">SET · Đặt lại số lượng tồn kho tuyệt đối</option>
+        </select>
+      </div>
+      <p class="muted" style="font-size:11px">Các cột hỗ trợ trong file: <code>customer</code> (mã hoặc tên khách), <code>sku</code> (mã sản phẩm), <code>quantity</code> (số lượng), <code>mode</code> (ADD hoặc SET), <code>note</code> (ghi chú).</p>
+      <div class="actions" style="margin-bottom:12px">
+        <button type="button" class="small" id="btnDownloadSampleStock">📥 Tải file mẫu nhập tồn (.csv)</button>
+      </div>
+      <div class="modalfoot">
+        <button type="button" id="closeBulkStock">Hủy</button>
+        <button class="primary">Xác nhận tải lên & Cập nhật</button>
+      </div>
+    </form>
+  `);
+  $('btnDownloadSampleStock').onclick = () => download('foxrun_stock_sample.csv', 'customer,sku,quantity,mode,note\nHL,MASK,50,ADD,Nhap hang dau ky\nHL,SERUM,100,SET,Kiem ke kho dinh ky');
+  $('closeBulkStock').onclick = () => $('modal').close();
+  $('bulkStockForm').onsubmit = e => {
+    e.preventDefault();
+    const file = $('f_stock_file').files[0];
+    if (!file) return notice('Vui lòng chọn file.', true);
+    run(async () => {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('default_mode', $('f_stock_mode').value);
+      const res = await api('/api/wf/stock/bulk-import', {method: 'POST', body: fd});
+      $('modal').close();
+      notice(res.message || `Đã cập nhật tồn kho thành công cho ${res.updated || res.total || 0} SKU.`);
+      await refresh();
+      await render();
+    }, e.submitter);
+  };
+}
+
+async function loadSystemFees() {
+  const container = $('systemFeeList');
+  if (!container) return;
+  try {
+    const fees = await api('/api/wf/system-fees');
+    if (!fees || !fees.length) {
+      container.innerHTML = '<p class="muted">Chưa có cấu hình phụ phí hệ thống. Bấm "+ Thêm cấu hình phí" để tạo.</p>';
+      return;
+    }
+    container.innerHTML = `
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Mã cấu hình</th>
+              <th>Tên loại phí</th>
+              <th>Mức phí</th>
+              <th>Postcodes áp dụng</th>
+              <th>Khu vực / Tỉnh thành</th>
+              <th>Thao tác</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${fees.map(f => `
+              <tr>
+                <td class="mono font-bold">${esc(f.key)}</td>
+                <td><strong>${esc(f.name)}</strong></td>
+                <td>${money(f.fee)}</td>
+                <td class="wrap font-mono" style="font-size:11px">${esc(f.postcodes || '—')}</td>
+                <td class="wrap" style="font-size:12px">${esc(f.regions || '—')}</td>
+                <td>
+                  <button type="button" class="small btn-edit-system-fee" data-fee-key="${esc(f.key)}">Sửa</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+    container.querySelectorAll('.btn-edit-system-fee').forEach(b => {
+      b.onclick = () => {
+        const item = fees.find(f => f.key === b.dataset.feeKey);
+        systemFeeModal(item);
+      };
+    });
+  } catch (err) {
+    container.innerHTML = `<p class="muted" style="color:#cf1322">Không tải được cấu hình phụ phí: ${esc(err.message)}</p>`;
+  }
+}
+
+function systemFeeModal(feeItem = null) {
+  const isEdit = !!feeItem;
+  openModal(isEdit ? 'Sửa cấu hình phí · ' + feeItem.name : 'Thêm cấu hình phụ phí hệ thống', `
+    <form id="systemFeeForm">
+      <div class="fieldgrid">
+        ${field('Mã cấu hình (key)', 'key', feeItem?.key || '', 'text', false, isEdit ? 'readonly' : 'required placeholder="tourism hoặc remote"')}
+        ${field('Tên hiển thị phụ phí', 'name', feeItem?.name || '', 'text', false, 'required placeholder="Phí tuyến du lịch / đảo"')}
+        ${field('Mức phụ phí', 'fee', feeItem?.fee ?? '30', 'number', false, 'min="0" step="0.01" required')}
+        <div class="field"></div>
+        ${area('Danh sách mã bưu chính áp dụng (cách nhau bởi dấu phẩy)', 'postcodes', feeItem?.postcodes || '', 'placeholder="20000, 21000, 35000..." rows="3"')}
+        ${area('Danh sách tỉnh / thành / khu vực áp dụng (cách nhau bởi dấu phẩy)', 'regions', feeItem?.regions || '', 'placeholder="Langkawi, Tioman, Sabah, Sarawak..." rows="3"')}
+      </div>
+      <div class="modalfoot">
+        <button type="button" id="closeSystemFee">Hủy</button>
+        <button class="primary">${isEdit ? 'Lưu thay đổi' : 'Tạo cấu hình'}</button>
+      </div>
+    </form>
+  `);
+  $('closeSystemFee').onclick = () => $('modal').close();
+  $('systemFeeForm').onsubmit = e => {
+    e.preventDefault();
+    run(async () => {
+      const data = formData('systemFeeForm');
+      data.fee = Number(data.fee);
+      await post('/api/wf/system-fees', data);
+      $('modal').close();
+      notice('Đã lưu cấu hình phụ phí hệ thống thành công.');
+      await loadSystemFees();
+    }, e.submitter);
+  };
+}
+
+async function loadCustomerSources(cid) {
+  const area = $('customerSourcesArea');
+  if (!area) return;
+  try {
+    const sources = await api('/api/wf/customers/' + cid + '/sources');
+    if (!sources || !sources.length) {
+      area.innerHTML = '<p class="muted">Chưa cấu hình nguồn đơn Pancake hoặc Google Sheet nào cho khách hàng này.</p>';
+      return;
+    }
+    area.innerHTML = `
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Loại nguồn</th>
+              <th>Tên nguồn</th>
+              <th>Tiền tố mã đơn</th>
+              <th>Trạng thái</th>
+              <th>Chi tiết kết nối</th>
+              <th>Thao tác</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${sources.map(s => `
+              <tr>
+                <td>${s.source_type === 'pancake' ? '<span class="badge blue">Pancake POS</span>' : '<span class="badge green">Google Sheet</span>'}</td>
+                <td><strong>${esc(s.source_name || 'Nguồn')}</strong></td>
+                <td class="mono font-bold">${esc(s.code_prefix || '—')}</td>
+                <td>${s.is_active ? '<span class="badge green">Hoạt động</span>' : '<span class="badge">Tạm dừng</span>'}</td>
+                <td style="font-size:12px" class="wrap">
+                  ${s.source_type === 'pancake'
+                    ? ('Shop: ' + esc(s.pancake_shop_id || '—') + ' · Page: ' + esc(s.pancake_page_id || '—') + (s.pancake_status_filter ? ' · Lọc: ' + esc(s.pancake_status_filter) : ''))
+                    : ('<a href="' + esc(s.gsheet_url) + '" target="_blank">Mở Sheet</a> · Tab: ' + esc(s.gsheet_tab_name || 'Sheet1'))}
+                </td>
+                <td>
+                  <div class="actions">
+                    <button type="button" class="small btn-test-src" data-src-id="${s.id}">🔍 Kiểm tra kết nối</button>
+                    <button type="button" class="small primary btn-sync-src" data-src-id="${s.id}">🔄 Đồng bộ ngay</button>
+                    <button type="button" class="small btn-edit-src" data-src-id="${s.id}">Sửa</button>
+                    <button type="button" class="small danger btn-del-src" data-src-id="${s.id}">Xóa</button>
+                  </div>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+    area.querySelectorAll('.btn-test-src').forEach(b => {
+      b.onclick = () => run(async () => {
+        const sid = b.dataset.srcId;
+        const res = await post('/api/wf/customers/' + cid + '/sources/' + sid + '/test', {});
+        notice(res.message || 'Kết nối tới nguồn thành công!');
+      }, b);
+    });
+    area.querySelectorAll('.btn-sync-src').forEach(b => {
+      b.onclick = () => run(async () => {
+        const sid = b.dataset.srcId;
+        const res = await post('/api/wf/customers/' + cid + '/sources/' + sid + '/sync', {});
+        notice(res.message || ('Đã đồng bộ ' + (res.synced || res.count || 0) + ' đơn hàng.'));
+        await refresh();
+        await render();
+        customerDetail(cid);
+      }, b);
+    });
+    area.querySelectorAll('.btn-edit-src').forEach(b => {
+      b.onclick = () => {
+        const sid = Number(b.dataset.srcId);
+        const s = sources.find(x => x.id === sid);
+        sourceFormModal(cid, s);
+      };
+    });
+    area.querySelectorAll('.btn-del-src').forEach(b => {
+      b.onclick = () => run(async () => {
+        const sid = b.dataset.srcId;
+        await api('/api/wf/customers/' + cid + '/sources/' + sid, {method: 'DELETE'});
+        notice('Đã xóa nguồn kết nối.');
+        await loadCustomerSources(cid);
+      }, b);
+    });
+  } catch (err) {
+    area.innerHTML = '<p class="muted" style="color:#cf1322">Lỗi tải nguồn: ' + esc(err.message) + '</p>';
+  }
+}
+
+function sourceFormModal(cid, s = null) {
+  const isEdit = !!s;
+  openModal(isEdit ? 'Sửa nguồn kết nối' : 'Thêm nguồn kết nối (Pancake / Google Sheet)', `
+    <form id="sourceEditForm">
+      <div class="fieldgrid">
+        <div class="field">
+          <label for="src_type">Loại nguồn</label>
+          <select id="src_type" name="source_type" ${isEdit ? 'disabled' : ''}>
+            <option value="pancake" ${s?.source_type === 'pancake' ? 'selected' : ''}>Pancake POS</option>
+            <option value="google_sheet" ${s?.source_type === 'google_sheet' ? 'selected' : ''}>Google Sheet</option>
+          </select>
+        </div>
+        ${field('Tên nguồn kết nối', 'source_name', s?.source_name || '', 'text', false, 'required placeholder="Ví dụ Pancake Shop Áo / Sheet Đơn VIP"')}
+        ${field('Tiền tố mã đơn (code_prefix)', 'code_prefix', s?.code_prefix || '', 'text', false, 'placeholder="Ví dụ FR-MY, AH, HL"')}
+        <div class="field" style="display:flex;align-items:center;margin-top:24px">
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="src_active" name="is_active" style="width:auto" ${s ? (s.is_active ? 'checked' : '') : 'checked'}>
+            Kích hoạt nguồn đồng bộ
+          </label>
+        </div>
+        <div class="full" id="pancakeConfigGroup" style="border:1px solid #91d5ff;background:#e6f7ff;padding:12px;border-radius:6px">
+          <h4 style="margin:0 0 10px 0;color:#096dd9">Cấu hình Pancake POS</h4>
+          <div class="fieldgrid">
+            ${field('Pancake API Key', 'pancake_api_key', s?.pancake_api_key || '', 'password', false, 'placeholder="API Key từ pos.pages.fm"')}
+            ${field('Pancake Shop ID', 'pancake_shop_id', s?.pancake_shop_id || '', 'text', false, 'placeholder="Ví dụ 12345"')}
+            ${field('Pancake Page ID (tùy chọn)', 'pancake_page_id', s?.pancake_page_id || '', 'text', false, 'placeholder="Ví dụ 67890"')}
+            ${field('Bộ lọc trạng thái Pancake', 'pancake_status_filter', s?.pancake_status_filter || '', 'text', false, 'placeholder="Ví dụ Chờ xác nhận, Đã xác nhận"')}
+          </div>
+        </div>
+        <div class="full" id="gsheetConfigGroup" style="border:1px solid #b7eb8f;background:#f6ffed;padding:12px;border-radius:6px;display:none">
+          <h4 style="margin:0 0 10px 0;color:#389e0d">Cấu hình Google Sheet</h4>
+          <div class="fieldgrid">
+            ${field('Google Sheet URL', 'gsheet_url', s?.gsheet_url || '', 'url', false, 'placeholder="https://docs.google.com/spreadsheets/d/..."')}
+            ${field('Tên Sheet / Tab', 'gsheet_tab_name', s?.gsheet_tab_name || 'Sheet1', 'text', false, 'placeholder="Sheet1"')}
+          </div>
+        </div>
+      </div>
+      <div class="modalfoot">
+        <button type="button" id="closeSourceForm">Hủy</button>
+        <button class="primary">${isEdit ? 'Lưu thay đổi' : 'Tạo nguồn kết nối'}</button>
+      </div>
+    </form>
+  `);
+  const updateTypeView = () => {
+    const val = $('src_type').value;
+    $('pancakeConfigGroup').style.display = val === 'pancake' ? 'block' : 'none';
+    $('gsheetConfigGroup').style.display = val === 'google_sheet' ? 'block' : 'none';
+  };
+  $('src_type').onchange = updateTypeView;
+  updateTypeView();
+  $('closeSourceForm').onclick = () => customerDetail(cid);
+  $('sourceEditForm').onsubmit = e => {
+    e.preventDefault();
+    run(async () => {
+      const data = formData('sourceEditForm');
+      data.is_active = $('src_active').checked;
+      if (isEdit) {
+        await api('/api/wf/customers/' + cid + '/sources/' + s.id, {method: 'PATCH', body: JSON.stringify(data)});
+        notice('Đã cập nhật nguồn kết nối thành công.');
+      } else {
+        await post('/api/wf/customers/' + cid + '/sources', data);
+        notice('Đã thêm nguồn kết nối thành công.');
+      }
+      customerDetail(cid);
+    }, e.submitter);
+  };
+}
+
+function openEditCustomerProfile(c) {
+  openModal('Sửa thông tin & Biểu phí · ' + c.name, `
+    <form id="customerProfileForm">
+      <div class="fieldgrid">
+        ${field('Tên khách hàng', 'name', c.name || '', 'text', false, 'required')}
+        ${field('Mã chính (primary_code)', 'primary_code', c.primary_code || c.code || '', 'text', false, 'required maxlength="50"')}
+        ${field('Mã bí danh (cách nhau bởi dấu phẩy)', 'aliases_str', (c.aliases || []).join(', '), 'text', true, 'placeholder="Ví dụ FG, HL2, FOX"')}
+        ${field('Từ khóa nhận diện SKU (cách nhau bởi dấu phẩy)', 'sku_keywords', c.sku_keywords || '', 'text', true, 'placeholder="Ví dụ MASK, SERUM, KEM_BODY"')}
+        ${field('Phí giao hàng cố định (fixed_delivery_fee)', 'fixed_delivery_fee', c.fixed_delivery_fee ?? '25', 'number', false, 'min="0" step="0.01" required')}
+        ${field('Phí hoàn hàng cố định (fixed_return_fee)', 'fixed_return_fee', c.fixed_return_fee ?? '15', 'number', false, 'min="0" step="0.01" required')}
+        ${field('% Phí thu hộ COD (cod_fee_percent)', 'cod_fee_percent', c.cod_fee_percent ?? '0.01', 'number', false, 'min="0" step="0.001" placeholder="0.01 cho 1%"')}
+      </div>
+      <div class="modalfoot">
+        <button type="button" id="closeProfileModal">Hủy</button>
+        <button class="primary">Lưu thông tin & Biểu phí</button>
+      </div>
+    </form>
+  `);
+  $('closeProfileModal').onclick = () => customerDetail(c.id);
+  $('customerProfileForm').onsubmit = e => {
+    e.preventDefault();
+    run(async () => {
+      const d = formData('customerProfileForm');
+      const payload = {
+        name: d.name,
+        primary_code: d.primary_code,
+        code: d.primary_code,
+        sku_keywords: d.sku_keywords,
+        fixed_delivery_fee: Number(d.fixed_delivery_fee),
+        fixed_return_fee: Number(d.fixed_return_fee),
+        cod_fee_percent: Number(d.cod_fee_percent)
+      };
+      if (d.aliases_str) {
+        payload.aliases = d.aliases_str.split(',').map(x => x.trim()).filter(Boolean);
+      }
+      await api('/api/wf/customers/' + c.id, {method: 'PATCH', body: JSON.stringify(payload)});
+      await refresh();
+      await render();
+      customerDetail(c.id);
+      notice('Đã cập nhật thông tin & biểu phí khách hàng.');
+    }, e.submitter);
+  };
+}
+
+function openUploadCodModal() {
+  openModal('Tải file trả COD & Hàng hoàn từ Kho', `
+    <form id="uploadCodForm">
+      <p class="muted">Quét mã vận đơn trả COD từ kho vận hoặc kiểm nhận hoàn. Hỗ trợ file Excel (.xlsx) hoặc CSV.</p>
+      <div class="field">
+        <label for="f_cod_file">Chọn file bảng tính (.xlsx, .csv)</label>
+        <input type="file" id="f_cod_file" name="file" accept=".xlsx,.csv" required>
+      </div>
+      <p class="muted" style="font-size:11px">Các cột hỗ trợ: <code>tracking</code> (mã vận đơn), <code>cod_received</code> (số tiền COD kho thu được), <code>returned</code> (1 nếu đã nhận hoàn kho, 0 nếu không).</p>
+      <div class="actions" style="margin-bottom:12px">
+        <button type="button" class="small" id="btnDownloadSampleCod">📥 Tải file mẫu trả COD (.csv)</button>
+      </div>
+      <div class="modalfoot">
+        <button type="button" id="closeUploadCod">Hủy</button>
+        <button class="primary">Xác nhận tải lên & Xử lý</button>
+      </div>
+    </form>
+  `);
+  $('btnDownloadSampleCod').onclick = () => download('foxrun_cod_sample.csv', 'tracking,cod_received,returned\nJT123456789,150.00,0\nSPX987654321,0.00,1');
+  $('closeUploadCod').onclick = () => $('modal').close();
+  $('uploadCodForm').onsubmit = e => {
+    e.preventDefault();
+    const file = $('f_cod_file').files[0];
+    if (!file) return notice('Vui lòng chọn file.', true);
+    run(async () => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await api('/api/wf/reconcile/upload-cod', {method: 'POST', body: fd});
+      $('modal').close();
+      notice(res.message || `Đã cập nhật đối soát kho thành công: ${res.updated || res.total || 0} đơn.`);
+      await refresh();
+      await render();
+    }, e.submitter);
+  };
+}
+
+function openBulkCreatePeriodsModal() {
+  const today = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date());
+  openModal('Tạo nhanh đợt đối soát cho tất cả khách hàng', `
+    <form id="bulkPeriodForm">
+      <p class="muted">Hệ thống sẽ quét tất cả khách hàng có đơn hoàn thành trong khoảng ngày và tạo đợt đối soát riêng cho từng khách.</p>
+      <div class="fieldgrid">
+        ${field('Từ ngày hoàn thành', 'date_from', today.slice(0, 8) + '01', 'date', false, 'required')}
+        ${field('Đến ngày hoàn thành', 'date_to', today, 'date', false, 'required')}
+      </div>
+      <div class="modalfoot">
+        <button type="button" id="closeBulkPeriod">Hủy</button>
+        <button class="primary">Xác nhận tạo đợt tự động</button>
+      </div>
+    </form>
+  `);
+  $('closeBulkPeriod').onclick = () => $('modal').close();
+  $('bulkPeriodForm').onsubmit = e => {
+    e.preventDefault();
+    run(async () => {
+      const data = formData('bulkPeriodForm');
+      const res = await post('/api/wf/periods/bulk-create', data);
+      $('modal').close();
+      notice(res.message || `Đã tạo thành công ${res.created || res.total || 0} đợt đối soát cho các khách hàng.`);
+      await refresh();
+      await renderPeriods();
+    }, e.submitter);
+  };
 }

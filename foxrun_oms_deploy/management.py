@@ -31,10 +31,16 @@ class BulkInput(BaseModel):
 
 
 class PeriodInput(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
+    name: str = Field(default='', max_length=200)
     date_from: date
     date_to: date
     customer_id: int | None = None
+    date_basis: str = 'completion'
+
+
+class PeriodBulkCreateInput(BaseModel):
+    date_from: date
+    date_to: date
     date_basis: str = 'completion'
 
 
@@ -100,7 +106,7 @@ def install(app, workflow, action_handler, claim_handler):
 
     @app.post('/api/wf/bulk')
     def bulk(data: BulkInput, db=Depends(w.get_db), user=Depends(w.current_user)):
-        if data.action not in {'approve', 'picked', 'packed', 'ship', 'cancel', 'tracking', 'delete', 'assign'}:
+        if data.action not in {'approve', 'picked', 'packed', 'ship', 'cancel', 'tracking', 'delete', 'assign', 'handover'}:
             raise HTTPException(422, 'Thao tác hàng loạt không hợp lệ.')
         if len({row.id for row in data.orders}) != len(data.orders):
             raise HTTPException(422, 'Danh sách đơn bị lặp.')
@@ -113,6 +119,16 @@ def install(app, workflow, action_handler, claim_handler):
                     remove_order(db, order, flow, user)
                     db.commit()
                     result = {'id': selected.id, 'ok': True, 'stage': 'DELETED'}
+                elif data.action == 'handover':
+                    w.require(user, 'admin', 'operator', 'warehouse')
+                    order, flow = w.lock_order(db, selected.id, selected.version)
+                    flow.stage = 'SHIPPED'
+                    if data.carrier:
+                        flow.carrier = data.carrier
+                    w.touch(flow)
+                    w.audit(db, user, 'order.handover', {'order_id': selected.id})
+                    db.commit()
+                    result = {'id': selected.id, 'ok': True, 'stage': flow.stage}
                 elif data.action == 'tracking':
                     w.require(user, 'admin', 'operator', 'warehouse')
                     order, flow = w.lock_order(db, selected.id, selected.version)
@@ -266,13 +282,19 @@ def install(app, workflow, action_handler, claim_handler):
     @app.post('/api/wf/periods')
     def create_period(data: PeriodInput, db=Depends(w.get_db), user=Depends(w.current_user)):
         w.require(user, 'admin', 'finance')
-        if not data.name.strip():
-            raise HTTPException(422, 'Cần tên đợt đối soát.')
+        period_name = data.name.strip() if data.name else ''
+        if not period_name:
+            if data.customer_id:
+                cust = db.get(w.Customer, data.customer_id)
+                code_str = (getattr(cust, 'primary_code', None) or cust.code) if cust else str(data.customer_id)
+                period_name = f"Đối soát {code_str} ({data.date_from.strftime('%d/%m')} - {data.date_to.strftime('%d/%m/%Y')})"
+            else:
+                period_name = f"Đối soát ({data.date_from.strftime('%d/%m')} - {data.date_to.strftime('%d/%m/%Y')})"
         rows = period_candidates(db, data.date_from, data.date_to, data.customer_id, data.date_basis)
         available = [row for row in rows if not row['period_id']]
         if not available:
             raise HTTPException(422, 'Khoảng ngày này không có đơn đủ điều kiện chưa thuộc đợt khác.')
-        period = Period(name=data.name.strip(), date_from=data.date_from.isoformat(),
+        period = Period(name=period_name, date_from=data.date_from.isoformat(),
                         date_to=data.date_to.isoformat(), date_basis=data.date_basis,
                         customer_id=data.customer_id, actor=user.username)
         db.add(period)
@@ -283,12 +305,90 @@ def install(app, workflow, action_handler, claim_handler):
         db.commit()
         return period_result(db, period)
 
+    @app.get('/api/wf/periods/preview')
+    def preview_period(customer_id: int | None = None, date_from: date | None = None, date_to: date | None = None,
+                       date_basis: str = 'completion', db=Depends(w.get_db), user=Depends(w.current_user)):
+        w.require(user, 'admin', 'finance')
+        if not date_from or not date_to:
+            raise HTTPException(422, 'Vui lòng chọn khoảng ngày.')
+        if date_from > date_to:
+            raise HTTPException(422, 'Ngày bắt đầu phải trước hoặc bằng ngày kết thúc.')
+        candidates = period_candidates(db, date_from, date_to, customer_id, date_basis)
+        available = [row for row in candidates if not row.get('period_id')]
+        del_cnt = sum(1 for r in available if r.get('transport') == 'DELIVERED')
+        ret_cnt = sum(1 for r in available if r.get('transport') == 'RETURNED')
+        total_cod = sum(Decimal(r.get('cod') or 0) for r in available if r.get('transport') == 'DELIVERED')
+        total_fixed_fee = sum(Decimal(r.get('fixed_delivery_fee') or 0) if r.get('transport') == 'DELIVERED' else Decimal(r.get('fixed_return_fee') or 0) for r in available)
+        total_special_fee = sum(Decimal(r.get('special_fee') or 0) for r in available)
+        total_cod_fee = sum(Decimal(r.get('cod_fee') or 0) for r in available if r.get('transport') == 'DELIVERED')
+        total_fee = sum(Decimal(r.get('total_fee') or 0) for r in available)
+        net_seller = sum(Decimal(r.get('net_seller') or 0) for r in available)
+        suggested_name = ''
+        if customer_id:
+            c = db.get(w.Customer, customer_id)
+            if c:
+                code_str = getattr(c, 'primary_code', None) or c.code
+                suggested_name = f"Đối soát {code_str} ({date_from.strftime('%d/%m')} - {date_to.strftime('%d/%m/%Y')})"
+        return {
+            'candidates': available,
+            'total_orders': len(available),
+            'delivered_count': del_cnt,
+            'returned_count': ret_cnt,
+            'total_cod': str(total_cod),
+            'total_fixed_fee': str(total_fixed_fee),
+            'total_special_fee': str(total_special_fee),
+            'total_cod_fee': str(total_cod_fee),
+            'total_fee': str(total_fee),
+            'net_seller': str(net_seller),
+            'suggested_name': suggested_name,
+            'orders': available
+        }
+
     @app.get('/api/wf/periods/{pid}')
     def period_detail(pid: int, db=Depends(w.get_db), user=Depends(w.current_user)):
         period = db.get(Period, pid)
         if not period:
             raise HTTPException(404, 'Không tìm thấy đợt đối soát.')
         return period_result(db, period, include_rows=True)
+
+    @app.post('/api/wf/periods/bulk-create')
+    def bulk_create_periods(data: PeriodBulkCreateInput, db=Depends(w.get_db), user=Depends(w.current_user)):
+        w.require(user, 'admin', 'finance')
+        if data.date_from > data.date_to:
+            raise HTTPException(422, 'Ngày bắt đầu phải trước hoặc bằng ngày kết thúc.')
+        candidates = period_candidates(db, data.date_from, data.date_to, None, data.date_basis)
+        available = [row for row in candidates if not row.get('period_id')]
+        by_customer = {}
+        for row in available:
+            cid = row['customer_id']
+            by_customer.setdefault(cid, []).append(row)
+        created_periods = []
+        for cid, rows in by_customer.items():
+            if not rows:
+                continue
+            c = db.get(w.Customer, cid)
+            if not c:
+                continue
+            code_str = getattr(c, 'primary_code', None) or c.code
+            period_name = f"Đối soát {code_str} ({data.date_from.strftime('%d/%m')} - {data.date_to.strftime('%d/%m/%Y')})"
+            period = Period(
+                name=period_name,
+                date_from=data.date_from.isoformat(),
+                date_to=data.date_to.isoformat(),
+                date_basis=data.date_basis,
+                customer_id=cid,
+                state='DRAFT',
+                version=1,
+                actor=user.username
+            )
+            db.add(period)
+            db.flush()
+            for row in rows:
+                db.add(PeriodLine(order_id=row['id'], period_id=period.id, snapshot=json.dumps(row, ensure_ascii=False)))
+            created_periods.append({'id': period.id, 'name': period.name, 'customer_id': cid, 'orders_count': len(rows)})
+        w.audit(db, user, 'periods.bulk_create', {'count': len(created_periods)})
+        db.commit()
+        return {'ok': True, 'count': len(created_periods), 'periods': created_periods}
 
     @app.post('/api/wf/periods/{pid}')
     def change_period(pid: int, data: PeriodAction, db=Depends(w.get_db), user=Depends(w.current_user)):
@@ -479,6 +579,8 @@ def order_extras(db, order):
         w.TrackingEvent.new_status.in_(['DELIVERED', 'RETURNED'])
     ).order_by(w.TrackingEvent.created_at, w.TrackingEvent.id)).all()
     delivered = next((event.created_at for event in events if event.new_status == 'DELIVERED'), None)
+    if not delivered and getattr(order, 'completed_at', None):
+        delivered = order.completed_at
     returned = next((event.created_at for event in events if event.new_status == 'RETURNED'), None)
     line = db.get(PeriodLine, order.id)
     return {'completed_at': delivered, 'returned_at': returned, 'period_id': line.period_id if line else None}
@@ -500,10 +602,10 @@ def period_candidates(db, start, end, customer_id, basis):
             continue
         row = w.serialize(db, order, db.get(w.Flow, order.id))
         when = order.created_at if basis == 'created' else (
-            row['returned_at'] if row['transport'] == 'RETURNED' else row['completed_at']
+            row['returned_at'] if row['transport'] == 'RETURNED' else (row['completed_at'] or getattr(order, 'completed_at', None) or order.created_at)
         )
         if when is None:
-            continue
+            when = order.created_at
         if when.tzinfo is None:
             when = when.replace(tzinfo=timezone.utc)
         if first <= when < last:

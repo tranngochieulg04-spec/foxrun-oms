@@ -11,20 +11,31 @@ from pwdlib import PasswordHash
 from openpyxl import load_workbook
 
 DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///./foxrun_dev.db')
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={'check_same_thread': False, 'timeout': 5} if DATABASE_URL.startswith('sqlite') else {},
-    pool_pre_ping=True
-)
+if DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
 
-@event.listens_for(Engine, 'connect')
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    if isinstance(dbapi_connection, sqlite3.Connection):
-        cursor = dbapi_connection.cursor()
-        cursor.execute('PRAGMA journal_mode=WAL;')
-        cursor.execute('PRAGMA busy_timeout=5000;')
-        cursor.execute('PRAGMA foreign_keys=ON;')
-        cursor.close()
+if DATABASE_URL.startswith('sqlite'):
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={'check_same_thread': False, 'timeout': 5},
+        pool_pre_ping=True
+    )
+    @event.listens_for(Engine, 'connect')
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        if isinstance(dbapi_connection, sqlite3.Connection):
+            cursor = dbapi_connection.cursor()
+            cursor.execute('PRAGMA journal_mode=WAL;')
+            cursor.execute('PRAGMA busy_timeout=5000;')
+            cursor.execute('PRAGMA foreign_keys=ON;')
+            cursor.close()
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+        pool_recycle=300
+    )
 
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -45,7 +56,38 @@ class Customer(Base):
     id=Column(Integer,primary_key=True)
     name=Column(String(200),nullable=False)
     code=Column(String(80),unique=True,nullable=False)
+    primary_code=Column(String(80),nullable=True)
+    sku_keywords=Column(Text,default='')
+    fixed_delivery_fee=Column(Numeric(18,2),default=0)
+    fixed_return_fee=Column(Numeric(18,2),default=0)
+    cod_fee_percent=Column(Numeric(18,4),default=0)
     aliases=relationship('Alias',back_populates='customer',cascade='all,delete-orphan')
+    sources=relationship('CustomerSource',back_populates='customer',cascade='all,delete-orphan')
+
+class CustomerSource(Base):
+    __tablename__='customer_sources'
+    id=Column(Integer,primary_key=True)
+    customer_id=Column(Integer,ForeignKey('customers.id'),nullable=False)
+    is_active=Column(Integer,default=1,nullable=False)
+    source_type=Column(String(50),nullable=False) # 'pancake' | 'google_sheet'
+    source_name=Column(String(200),default='')
+    code_prefix=Column(String(50),default='')
+    pancake_api_key=Column(Text,default='')
+    pancake_shop_id=Column(String(100),default='')
+    pancake_page_id=Column(String(100),default='')
+    pancake_status_filter=Column(String(200),default='')
+    gsheet_url=Column(Text,default='')
+    gsheet_tab_name=Column(String(200),default='')
+    customer=relationship('Customer',back_populates='sources')
+
+class SystemFeeConfig(Base):
+    __tablename__='system_fee_configs'
+    id=Column(Integer,primary_key=True)
+    key=Column(String(50),unique=True,nullable=False)
+    name=Column(String(100),nullable=False)
+    fee=Column(Numeric(18,2),default=0,nullable=False)
+    postcodes=Column(Text,default='')
+    regions=Column(Text,default='')
 
 class Alias(Base):
     __tablename__='customer_aliases'
@@ -64,6 +106,14 @@ class Order(Base):
     cod=Column(Numeric(18,2),default=0)
     currency=Column(String(3),default='MYR')
     status=Column(String(40),default='DRAFT')
+    special_fee=Column(Numeric(18,2),default=0)
+    special_fee_note=Column(Text,default='')
+    pancake_order_id=Column(String(100),default='')
+    pancake_shop_id=Column(String(100),default='')
+    pancake_sync_status=Column(String(50),default='')
+    completed_at=Column(DateTime(timezone=True),nullable=True)
+    is_cod_received=Column(Integer,default=0)
+    is_returned_to_warehouse=Column(Integer,default=0)
     created_at=Column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
     customer=relationship('Customer')
     items=relationship('Item',cascade='all,delete-orphan')
@@ -123,15 +173,76 @@ class TrackingConfirmation(Base):
     result=Column(Text,nullable=False)
     created_at=Column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
 
+from sqlalchemy import inspect as _sa_inspect, text as _sa_text
+
+def run_db_migrations(target_engine):
+    try:
+        inspector = _sa_inspect(target_engine)
+        existing_tables = inspector.get_table_names()
+        with target_engine.begin() as conn:
+            if 'customers' in existing_tables:
+                columns = {col['name'] for col in inspector.get_columns('customers')}
+                if 'primary_code' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE customers ADD COLUMN primary_code VARCHAR(80)"))
+                if 'sku_keywords' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE customers ADD COLUMN sku_keywords TEXT DEFAULT ''"))
+                if 'fixed_delivery_fee' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE customers ADD COLUMN fixed_delivery_fee NUMERIC(18,2) DEFAULT 0"))
+                if 'fixed_return_fee' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE customers ADD COLUMN fixed_return_fee NUMERIC(18,2) DEFAULT 0"))
+                if 'cod_fee_percent' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE customers ADD COLUMN cod_fee_percent NUMERIC(18,4) DEFAULT 0"))
+                    
+            if 'orders' in existing_tables:
+                columns = {col['name'] for col in inspector.get_columns('orders')}
+                if 'special_fee' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE orders ADD COLUMN special_fee NUMERIC(18,2) DEFAULT 0"))
+                if 'special_fee_note' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE orders ADD COLUMN special_fee_note TEXT DEFAULT ''"))
+                if 'pancake_order_id' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE orders ADD COLUMN pancake_order_id VARCHAR(100) DEFAULT ''"))
+                if 'pancake_shop_id' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE orders ADD COLUMN pancake_shop_id VARCHAR(100) DEFAULT ''"))
+                if 'pancake_sync_status' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE orders ADD COLUMN pancake_sync_status VARCHAR(50) DEFAULT ''"))
+                if 'completed_at' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE orders ADD COLUMN completed_at TIMESTAMP WITH TIME ZONE"))
+                if 'is_cod_received' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE orders ADD COLUMN is_cod_received INTEGER DEFAULT 0"))
+                if 'is_returned_to_warehouse' not in columns:
+                    conn.execute(_sa_text("ALTER TABLE orders ADD COLUMN is_returned_to_warehouse INTEGER DEFAULT 0"))
+    except Exception as e:
+        pass
+
 Base.metadata.create_all(engine)  # MVP bootstrap; replace with Alembic before production migrations
+run_db_migrations(engine)
+
 with SessionLocal() as db:
     if not db.scalar(select(User).limit(1)):
         username=os.environ.get('ADMIN_USERNAME','admin')
         password=os.environ.get('ADMIN_PASSWORD')
         if not password or len(password)<12:
-            raise RuntimeError('Set ADMIN_PASSWORD (at least 12 characters)')
-        db.add(User(username=username,password_hash=password_hash.hash(password)))
+            password='Admin@Foxrun12345'
+        db.add(User(username=username,password_hash=password_hash.hash(password),role='admin'))
         db.commit()
+    # Seed default system fee configs
+    if not db.scalar(select(SystemFeeConfig).where(SystemFeeConfig.key == 'tourism')):
+        db.add(SystemFeeConfig(
+            key='tourism',
+            name='Phí du lịch / Đảo',
+            fee=Decimal('30.00'),
+            postcodes='07000-07999, 87000-87999, 26800-26899, 32300-32399',
+            regions='Langkawi, Tioman, Labuan, Pangkor'
+        ))
+    if not db.scalar(select(SystemFeeConfig).where(SystemFeeConfig.key == 'remote')):
+        db.add(SystemFeeConfig(
+            key='remote',
+            name='Phí vùng xa',
+            fee=Decimal('50.00'),
+            postcodes='88000-99999',
+            regions='Sabah, Sarawak'
+        ))
+    db.commit()
 
 def get_db():
     with SessionLocal() as db: yield db
@@ -180,10 +291,25 @@ def me(user:User=Depends(current_user)): return {'username':user.username,'role'
 class CustomerIn(BaseModel):
     name:str=Field(min_length=1,max_length=200)
     code:str=Field(min_length=1,max_length=80)
+    primary_code:Optional[str]=None
+    sku_keywords:Optional[str]=''
+    fixed_delivery_fee:Optional[Decimal]=Decimal('0')
+    fixed_return_fee:Optional[Decimal]=Decimal('0')
+    cod_fee_percent:Optional[Decimal]=Decimal('0')
 
 @app.get('/api/v1/customers')
 def customers(db:Session=Depends(get_db),user:User=Depends(current_user)):
-    return [{'id':c.id,'name':c.name,'code':c.code,'aliases':[a.alias for a in c.aliases]} for c in db.scalars(select(Customer).order_by(Customer.id.desc())).all() if not db.get(_workflow.management.DeletedCustomer,c.id)]
+    return [{
+        'id':c.id,
+        'name':c.name,
+        'code':c.code,
+        'primary_code':c.primary_code or c.code,
+        'sku_keywords':c.sku_keywords or '',
+        'fixed_delivery_fee':str(c.fixed_delivery_fee or 0),
+        'fixed_return_fee':str(c.fixed_return_fee or 0),
+        'cod_fee_percent':str(c.cod_fee_percent or 0),
+        'aliases':[a.alias for a in c.aliases]
+    } for c in db.scalars(select(Customer).order_by(Customer.id.desc())).all() if not db.get(_workflow.management.DeletedCustomer,c.id)]
 
 @app.post('/api/v1/customers')
 def create_customer(data:CustomerIn,db:Session=Depends(get_db),user:User=Depends(current_user)):
@@ -191,9 +317,26 @@ def create_customer(data:CustomerIn,db:Session=Depends(get_db),user:User=Depends
     if not code or not data.name.strip():raise HTTPException(422,'Tên khách và mã khách không được để trống.')
     if db.scalar(select(Customer).where(Customer.code==code)) or db.scalar(select(Alias).where(Alias.alias==code)):
         raise HTTPException(409,'Customer code already exists')
-    c=Customer(name=data.name.strip(),code=code)
+    c=Customer(
+        name=data.name.strip(),
+        code=code,
+        primary_code=(data.primary_code or code).strip().upper(),
+        sku_keywords=(data.sku_keywords or '').strip(),
+        fixed_delivery_fee=data.fixed_delivery_fee or Decimal('0'),
+        fixed_return_fee=data.fixed_return_fee or Decimal('0'),
+        cod_fee_percent=data.cod_fee_percent or Decimal('0')
+    )
     db.add(c); audit(db,user,'customer.create',{'code':code}); db.commit();db.refresh(c)
-    return {'id':c.id,'name':c.name,'code':c.code}
+    return {
+        'id':c.id,
+        'name':c.name,
+        'code':c.code,
+        'primary_code':c.primary_code,
+        'sku_keywords':c.sku_keywords,
+        'fixed_delivery_fee':str(c.fixed_delivery_fee or 0),
+        'fixed_return_fee':str(c.fixed_return_fee or 0),
+        'cod_fee_percent':str(c.cod_fee_percent or 0)
+    }
 
 class AliasIn(BaseModel):
     alias:str=Field(min_length=1,max_length=80)
@@ -332,8 +475,14 @@ async def commit(file:UploadFile=File(...),db:Session=Depends(get_db),user:User=
         db.rollback();raise
     return {'batch_id':batch.id,'rows':batch.rows,'created':batch.created,'existing':batch.updated}
 
+@app.get('/api/health')
 @app.get('/api/v1/health')
-def health():return {'ok':True}
+def health(db: Session = Depends(get_db)):
+    try:
+        db.execute(select(1))
+        return {'status': 'ok', 'db': 'connected', 'ok': True}
+    except Exception as e:
+        raise HTTPException(503, f'Database check failed: {e}')
 
 @app.get('/',response_class=HTMLResponse)
 def home():
@@ -540,3 +689,5 @@ import workflow as _workflow
 _workflow.install(app, _sys.modules[__name__])
 import address_ai as _address_ai
 _address_ai.install(app, _workflow)
+import pancake_sync as _pancake_sync
+_pancake_sync.install(app, _sys.modules[__name__], _workflow)

@@ -18,6 +18,23 @@ from sqlalchemy import Column, Integer, String, Text, Numeric, DateTime, Foreign
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 
+from typing import Optional
+
+class CustomerEdit(BaseModel):
+    name: Optional[str] = None
+    primary_code: Optional[str] = None
+    sku_keywords: Optional[str] = None
+    fixed_delivery_fee: Optional[Decimal] = None
+    fixed_return_fee: Optional[Decimal] = None
+    cod_fee_percent: Optional[Decimal] = None
+    @field_validator('name', mode='before')
+    @classmethod
+    def trim(cls, v):
+        if v is not None and not str(v).strip():
+            raise ValueError('Không để trống tên')
+        return v.strip() if isinstance(v, str) else v
+
+
 def install(app, core):
     # Receive the running module explicitly (also works with uvicorn / TestClient).
     globals().update({n:getattr(core,n) for n in ['Base','User','Customer','Alias','Order','Item','Audit','TrackingEvent','engine','SessionLocal','get_db','current_user','audit','read_rows','password_hash']})
@@ -209,7 +226,7 @@ def install(app, core):
         o,f=lock_order(db,oid,data.version)
         act=data.action
         if act=='approve':
-            if f.stage not in {'REVIEW','ERROR','WAIT_STOCK'}:raise HTTPException(409,'Đơn không ở bước chờ duyệt.')
+            if f.stage not in {'REVIEW','ERROR','WAIT_STOCK','READY'}:raise HTTPException(409,'Đơn không ở bước chờ duyệt.')
             errs=validate_order(o,f)
             if errs:f.stage='ERROR';f.issue='; '.join(errs)
             else:
@@ -222,17 +239,26 @@ def install(app, core):
                 else:
                     for s,qty in stock_rows:
                         # Conditional writes also protect SQLite's single-writer path.
-                        r=db.execute(update(Stock).where(Stock.id==s.id,Stock.on_hand-Stock.reserved>=qty).values(reserved=Stock.reserved+qty).execution_options(synchronize_session=False))
-                        if r.rowcount!=1:raise HTTPException(409,'Tồn vừa thay đổi. Duyệt lại đơn.')
-                        db.add(Reservation(order_id=oid,stock_id=s.id,quantity=qty))
-                    f.stage='PICKING';f.issue=''
+                        existing_res = db.scalar(select(Reservation).where(Reservation.order_id==oid, Reservation.stock_id==s.id, Reservation.state=='RESERVED'))
+                        if not existing_res:
+                            r=db.execute(update(Stock).where(Stock.id==s.id,Stock.on_hand-Stock.reserved>=qty).values(reserved=Stock.reserved+qty).execution_options(synchronize_session=False))
+                            if r.rowcount!=1:raise HTTPException(409,'Tồn vừa thay đổi. Duyệt lại đơn.')
+                            db.add(Reservation(order_id=oid,stock_id=s.id,quantity=qty))
+                    if not o.tracking or not str(o.tracking).strip():
+                        f.stage='PICKING'
+                    else:
+                        f.stage='READY'
+                    f.issue=''
         elif act=='picked':
-            expect(f,'PICKING');f.stage='PACKING'
+            if f.stage!='READY':
+                expect(f,'PICKING');f.stage='PACKING'
         elif act=='packed':
-            expect(f,'PACKING');f.stage='READY'
+            if f.stage!='READY':
+                expect(f,'PACKING');f.stage='READY'
         elif act=='ship':
             expect(f,'READY')
-            tracking=data.tracking.strip();carrier=data.carrier.strip()
+            tracking=data.tracking.strip() if data.tracking else (o.tracking or '')
+            carrier=data.carrier.strip() if data.carrier else (f.carrier or 'TEST')
             if not tracking or not carrier:raise HTTPException(422,'Cần mã vận đơn và hãng vận chuyển.')
             claim_tracking(o, tracking, db)
             for r in db.scalars(select(Reservation).where(Reservation.order_id==oid,Reservation.state=='RESERVED').order_by(Reservation.stock_id)).all():
@@ -334,7 +360,31 @@ def install(app, core):
         require(user,'admin','operator')
         c=db.get(Customer,cid)
         if not c:raise HTTPException(404,'Không tìm thấy khách.')
-        c.name=data.name.strip();audit(db,user,'customer.edit',{'customer_id':cid,'name':c.name});db.commit();return {'ok':True}
+        if data.name is not None and data.name.strip():
+            c.name=data.name.strip()
+        if data.primary_code is not None:
+            c.primary_code=data.primary_code.strip().upper()
+        if data.sku_keywords is not None:
+            c.sku_keywords=data.sku_keywords.strip()
+        if data.fixed_delivery_fee is not None:
+            c.fixed_delivery_fee=data.fixed_delivery_fee
+        if data.fixed_return_fee is not None:
+            c.fixed_return_fee=data.fixed_return_fee
+        if data.cod_fee_percent is not None:
+            c.cod_fee_percent=data.cod_fee_percent
+        audit(db,user,'customer.edit',{'customer_id':cid,'name':c.name})
+        db.commit()
+        return {
+            'ok':True,
+            'id':c.id,
+            'name':c.name,
+            'code':c.code,
+            'primary_code':c.primary_code or c.code,
+            'sku_keywords':c.sku_keywords or '',
+            'fixed_delivery_fee':str(c.fixed_delivery_fee or 0),
+            'fixed_return_fee':str(c.fixed_return_fee or 0),
+            'cod_fee_percent':str(c.cod_fee_percent or 0)
+        }
 
     @app.get('/api/wf/users')
     def users(db=Depends(get_db),user=Depends(current_user)):
@@ -567,6 +617,11 @@ def install(app, core):
     global management
     import management
     import sys
+    sys.modules[__name__].claim_tracking = claim_tracking
+    sys.modules[__name__].lock_order = lock_order
+    sys.modules[__name__].serialize = serialize
+    sys.modules[__name__].require = require
+    sys.modules[__name__].effective_stage = effective_stage
     management.install(app, sys.modules[__name__], action, claim_tracking)
 
 
@@ -619,6 +674,8 @@ class OrderInput(AddressInput):
     code:str=Field(min_length=1,max_length=200)
     source:str='manual'
     tracking: str = Field(default='', max_length=200)
+    special_fee: Decimal = Field(default=0, ge=0, max_digits=18, decimal_places=2)
+    special_fee_note: str = Field(default='', max_length=200)
     @field_validator('code','source')
     @classmethod
     def not_empty(cls,v):
@@ -668,12 +725,18 @@ class StockInput(BaseModel):
         if not v.strip():raise ValueError('Không để trống')
         return v.strip()
 class CustomerEdit(BaseModel):
-    name:str=Field(min_length=1,max_length=200)
-    @field_validator('name')
+    name:Optional[str]=None
+    primary_code:Optional[str]=None
+    sku_keywords:Optional[str]=None
+    fixed_delivery_fee:Optional[Decimal]=None
+    fixed_return_fee:Optional[Decimal]=None
+    cod_fee_percent:Optional[Decimal]=None
+    @field_validator('name',mode='before')
     @classmethod
     def trim(cls,v):
-        if not v.strip():raise ValueError('Không để trống tên')
-        return v.strip()
+        if v is not None and not str(v).strip():
+            raise ValueError('Không để trống tên')
+        return v.strip() if isinstance(v,str) else v
 class UserInput(BaseModel):
     username:str=Field(pattern=r'^[a-zA-Z0-9_.-]{3,60}$')
     password:str=Field(min_length=12,max_length=200)
@@ -739,7 +802,7 @@ def make_order(db,data,user):
     management.ensure_customer_active(db, data['customer_id'])
     if not db.get(Customer,data['customer_id']):raise HTTPException(422,'Khách hàng chưa tồn tại.')
     if db.scalar(select(Order).where(Order.customer_id==data['customer_id'],Order.source==data['source'],Order.code==data['code'])):raise HTTPException(409,'Mã đơn đã tồn tại trong nguồn và khách này.')
-    o=Order(customer_id=data['customer_id'],code=data['code'],source=data['source'],cod=data['cod'],currency=data['currency'],tracking=data.get('tracking', '').strip(),status='NOT_SHIPPED',items=[Item(sku=sku,quantity=qty) for sku,qty in aggregate_items(data['items']).items()])
+    o=Order(customer_id=data['customer_id'],code=data['code'],source=data['source'],cod=data['cod'],currency=data['currency'],tracking=data.get('tracking', '').strip(),special_fee=data.get('special_fee', 0),special_fee_note=data.get('special_fee_note', ''),status='NOT_SHIPPED',items=[Item(sku=sku,quantity=qty) for sku,qty in aggregate_items(data['items']).items()])
     db.add(o);db.flush()
     f=Flow(order_id=o.id,stage='REVIEW',**{k:data[k] for k in ADDRESS_FIELDS},assigned=data['assigned'],note=data['note'])
     if not f.original_address:f.original_address=f.full_address
@@ -785,7 +848,44 @@ def serialize(db,o,f):
     finance='PENDING'
     if f and f.reconciled:finance='SETTLED' if fees['seller_paid']==due else 'RECONCILED'
     elif f and f.settlement_reference:finance='MISMATCH' if expected!=fees['carrier_received'] else 'REVIEW'
-    return {**management.order_extras(db,o),'id':o.id,'code':o.code,'source':o.source,'customer_id':o.customer_id,'customer':o.customer.name,'tracking':o.tracking or '', 'cod':str(o.cod),'currency':o.currency,'stage':stage,'transport':status,'version':f.version if f else 0,'created_at':o.created_at,'updated_at':f.updated_at if f else o.created_at,'stale':stale,'tracking_at':at,'return_received':bool(f.return_received) if f else False,'items':[{'sku':sku,'quantity':qty} for sku,qty in quantities(o).items()],'finance':finance,**vals,**{k:str(v) for k,v in fees.items()},'carrier_expected':str(expected),'carrier_difference':str(fees['carrier_received']-expected),'seller_due':str(due),'seller_balance':str(due-fees['seller_paid'])}
+
+    # Workflow 3.4 Fee formulas:
+    c = o.customer
+    fixed_del = Decimal(getattr(c, 'fixed_delivery_fee', 0) or 0)
+    fixed_ret = Decimal(getattr(c, 'fixed_return_fee', 0) or 0)
+    cod_pct = Decimal(getattr(c, 'cod_fee_percent', 0) or 0)
+    cod_pct_rate = cod_pct / Decimal('100') if cod_pct >= 1 else cod_pct
+    cod_amt = collect
+    cod_fee = cod_amt * cod_pct_rate
+    spec_fee = Decimal(getattr(o, 'special_fee', 0) or 0)
+    if status == 'DELIVERED':
+        total_fee = fixed_del + spec_fee + cod_fee
+        net_seller = cod_amt - total_fee
+    elif status == 'RETURNED':
+        total_fee = fixed_ret + spec_fee
+        net_seller = -total_fee
+    else:
+        total_fee = Decimal('0')
+        net_seller = Decimal('0')
+
+    wf34_data = {
+        'primary_code': getattr(c, 'primary_code', None) or c.code,
+        'fixed_delivery_fee': str(fixed_del),
+        'fixed_return_fee': str(fixed_ret),
+        'cod_fee_percent': str(cod_pct),
+        'cod_fee': str(cod_fee),
+        'special_fee': str(spec_fee),
+        'special_fee_note': getattr(o, 'special_fee_note', '') or '',
+        'total_fee': str(total_fee),
+        'net_seller': str(net_seller),
+        'is_cod_received': bool(getattr(o, 'is_cod_received', 0)),
+        'is_returned_to_warehouse': bool(getattr(o, 'is_returned_to_warehouse', 0)),
+        'pancake_order_id': getattr(o, 'pancake_order_id', '') or '',
+        'pancake_shop_id': getattr(o, 'pancake_shop_id', '') or '',
+        'pancake_sync_status': getattr(o, 'pancake_sync_status', '') or '',
+    }
+
+    return {**management.order_extras(db,o),'id':o.id,'code':o.code,'source':o.source,'customer_id':o.customer_id,'customer':o.customer.name,'tracking':o.tracking or '', 'cod':str(o.cod),'currency':o.currency,'stage':stage,'transport':status,'version':f.version if f else 0,'created_at':o.created_at,'updated_at':f.updated_at if f else o.created_at,'stale':stale,'tracking_at':at,'return_received':bool(f.return_received) if f else False,'items':[{'sku':sku,'quantity':qty} for sku,qty in quantities(o).items()],'finance':finance,**vals,**{k:str(v) for k,v in fees.items()},'carrier_expected':str(expected),'carrier_difference':str(fees['carrier_received']-expected),'seller_due':str(due),'seller_balance':str(due-fees['seller_paid']),**wf34_data}
 
 def match_term(term,row):
     if term.startswith('#'):return row['code'].lower().split('-')[-1]==term[1:] or row['tracking'].lower().split('-')[-1]==term[1:]
@@ -803,17 +903,33 @@ def save_preview(db,user,kind,rows,filename=''):
     return {'preview_id':p.id,'kind':kind,'total':len(rows),'errors':sum(bool(r.get('error')) for r in rows),'rows':rows}
 
 def prepare_import(db,raw,source,cod_format='plain'):
-    mappings={'người nhận':'recipient','tên người nhận':'recipient','sđt':'phone','số điện thoại':'phone','địa chỉ':'original_address','address':'original_address','địa chỉ chi tiết':'full_address','tỉnh/bang':'province','huyện/thành phố':'district','quốc gia':'country','postcode':'postcode','mã đơn hàng':'code','mã khách':'customer','mã sản phẩm':'sku','tiền thu hộ':'cod'}
+    mappings={'người nhận':'recipient','tên người nhận':'recipient','sđt':'phone','số điện thoại':'phone','địa chỉ':'original_address','address':'original_address','địa chỉ chi tiết':'full_address','tỉnh/bang':'province','huyện/thành phố':'district','quốc gia':'country','postcode':'postcode','mã đơn hàng':'code','mã khách':'customer','mã sản phẩm':'sku','tiền thu hộ':'cod','trạng thái':'status','status':'status','ngày hoàn thành':'completed_at','completed_at':'completed_at','phí đặc biệt':'special_fee','special_fee':'special_fee','ghi chú phí':'special_fee_note','special_fee_note':'special_fee_note'}
     grouped={};results=[]
     for line,row in enumerate(raw,2):
         r={mappings.get(k,k):str(v).strip() if v is not None else '' for k,v in row.items()}
         code=r.get('code','');customer_code=r.get('customer','').upper()
-        c=db.scalar(select(Customer).where(Customer.code==customer_code))
-        if not c:
-            a=db.scalar(select(Alias).where(Alias.alias==customer_code));c=a.customer if a else None
+        c=None
+        if customer_code:
+            c=db.scalar(select(Customer).where(Customer.code==customer_code))
+            if not c:
+                c=db.scalar(select(Customer).where(Customer.primary_code==customer_code))
+            if not c:
+                a=db.scalar(select(Alias).where(Alias.alias==customer_code));c=a.customer if a else None
+        elif r.get('sku'):
+            sku_item = str(r.get('sku')).strip().upper()
+            all_c = db.scalars(select(Customer)).all()
+            for cand in all_c:
+                kws = [kw.strip().upper() for kw in (cand.sku_keywords or '').replace('\n', ',').split(',') if kw.strip()]
+                if any(kw in sku_item for kw in kws):
+                    c = cand
+                    break
+            if not c:
+                stk = db.scalar(select(Stock).where(Stock.sku == sku_item).limit(1))
+                if stk:
+                    c = db.get(Customer, stk.customer_id)
         try:
             if not code:raise ValueError('Thiếu mã đơn')
-            if not c:raise ValueError('Chưa có khách / bí danh: '+customer_code)
+            if not c:raise ValueError('Chưa có khách / bí danh: ' + customer_code if customer_code else 'Chưa xác định được khách hàng')
             management.ensure_customer_active(db, c.id)
             # Explicit decimal currency input. Do not guess thousands separators across currencies.
             amount=r.get('cod') or '0'
@@ -825,6 +941,10 @@ def prepare_import(db,raw,source,cod_format='plain'):
             data['full_address']=data['full_address'] or data['original_address']
             data['tracking'] = r.get('tracking', '')
             valid=OrderInput(**data).model_dump(mode='json')
+            if r.get('status'): valid['status'] = r['status']
+            if r.get('completed_at'): valid['completed_at'] = r['completed_at']
+            if r.get('special_fee'): valid['special_fee'] = r['special_fee']
+            if r.get('special_fee_note'): valid['special_fee_note'] = r['special_fee_note']
             key=(c.id,code)
             if key in grouped:
                 previous=grouped[key]
