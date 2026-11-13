@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: foxrun-oms
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run_local.py
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: FOXRUN_HOST
+        value: 0.0.0.0

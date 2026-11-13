@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FOXRUN · Điều hành đơn hàng</title>
+<style>
+:root{--navy:#001529;--ink:#141414;--orange:#1890ff;--pancake-accent:#1890ff;--pancake-hover:#40a9ff;--paper:#f0f2f5;--line:#f0f0f0;--border:#d9d9d9;--muted:#8c8c8c;--green:#52c41a;--red:#ff4d4f;--warning:#faad14}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5715 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif}
+button,input,select,textarea{font:inherit}
+button,a,input,select,textarea{outline-offset:2px}
+button{cursor:pointer;border:1px solid #d9d9d9;padding:8px 16px;border-radius:6px;background:white;color:rgba(0,0,0,0.88);font-weight:500;transition:all .2s cubic-bezier(.645,.045,.355,1);box-shadow:0 2px 0 rgba(0,0,0,0.02)}
+button:hover{border-color:var(--pancake-accent);color:var(--pancake-accent)}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:linear-gradient(135deg,#1890ff,#096dd9);color:white;border-color:transparent;box-shadow:0 2px 4px rgba(24,144,255,0.25)}
+button.primary:hover{background:linear-gradient(135deg,#40a9ff,#1890ff);border-color:transparent;color:white}
+button.danger{color:#ff4d4f;border-color:#ff4d4f33}
+button.danger:hover{border-color:#ff4d4f;background:#fff1f0}
+button.small{padding:4px 10px;font-size:12px;border-radius:4px}
+input,select,textarea{border:1px solid #d9d9d9;background:white;border-radius:6px;padding:8px 12px;width:100%;color:rgba(0,0,0,0.88);transition:all .2s;box-shadow:0 2px 0 rgba(0,0,0,0.015)}
+textarea{resize:vertical;min-height:85px}
+label{display:block;color:#434343;font-size:13px;font-weight:600;margin-bottom:6px}
+input:focus,select:focus,textarea:focus{border-color:var(--pancake-accent);outline:none;box-shadow:0 0 0 2px rgba(24,144,255,0.2)}
+h1,h2,h3,p{margin-top:0}
+h1{font-size:24px;font-weight:600;letter-spacing:-.4px;margin-bottom:4px;color:#1f1f1f}
+h2{font-size:18px;font-weight:600}
+h3{font-size:15px;font-weight:600}
+a{color:#1890ff;text-decoration:none}
+a:hover{color:#40a9ff;text-decoration:underline}
+.muted{color:var(--muted)}
+.mono{font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace}
+.app{display:grid;grid-template-columns:236px 1fr;min-height:100vh}
+.sidebar{background:#001529;color:rgba(255,255,255,0.65);padding:24px 12px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;box-shadow:2px 0 8px 0 rgba(29,35,41,0.05)}
+.brand{padding:4px 12px 24px;color:white;font-size:20px;font-weight:700;letter-spacing:1px;display:flex;flex-direction:column;gap:3px}
+.brand span{color:#1890ff}
+.brand small{font-size:10px;letter-spacing:1.5px;color:rgba(255,255,255,0.45);font-weight:500}
+.navlabel{font-size:11px;letter-spacing:.8px;margin:18px 12px 6px;color:rgba(255,255,255,0.35);font-weight:700;text-transform:uppercase}
+.nav{background:none;border:0;color:rgba(255,255,255,0.65);text-align:left;width:100%;margin:3px 0;padding:9px 12px;border-radius:6px;font-weight:500;box-shadow:none;display:flex;align-items:center;justify-content:space-between}
+.nav:hover{background:rgba(255,255,255,0.08);color:white}
+.nav.active{background:#1890ff!important;color:white!important;font-weight:600;box-shadow:0 2px 6px rgba(24,144,255,0.35)}
+.nav .num{font-size:11px;background:rgba(255,255,255,0.2);padding:1px 6px;border-radius:10px;font-weight:600}
+.nav.active .num{background:rgba(255,255,255,0.3);color:white}
+.sidebar nav{overflow-y:auto;min-height:0}
+.sidebar .bottom{margin-top:auto;padding:16px 12px 0;font-size:11px;color:rgba(255,255,255,0.45);border-top:1px solid rgba(255,255,255,0.08)}
+.dot{display:inline-block;width:6px;height:6px;background:#52c41a;border-radius:50%;margin-right:6px}
+header{height:64px;background:#fff;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between;padding:0 28px;box-shadow:0 1px 4px rgba(0,21,41,0.04)}
+.crumb{font-size:13px;color:var(--muted)}
+.account{display:flex;gap:12px;align-items:center}
+.avatar{background:#1890ff;color:white;border-radius:50%;height:32px;width:32px;display:grid;place-items:center;font-weight:600;box-shadow:0 2px 6px rgba(24,144,255,0.3)}
+.workspace{padding:24px 28px 40px;max-width:1800px;margin:auto}
+.heading{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:20px}
+.eyebrow{font-size:11px;letter-spacing:1px;font-weight:700;color:#1890ff;margin-bottom:4px;text-transform:uppercase}
+.heading p{margin:4px 0;color:var(--muted);font-size:13px}
+.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:20px}
+.metric{background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px;text-align:left;box-shadow:0 1px 3px rgba(0,0,0,0.03);position:relative;overflow:hidden;transition:all .2s}
+.metric:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.06);border-color:#1890ff55}
+.metric .label{font-size:13px;color:var(--muted);font-weight:500}
+.metric .value{font-size:28px;line-height:1.2;margin:6px 0;font-weight:700;letter-spacing:-.5px;color:#1f1f1f}
+.metric small{font-size:12px;color:var(--muted)}
+.metric.warn .value{color:#fa8c16}
+.panel{background:white;border:1px solid #f0f0f0;border-radius:8px;overflow:hidden;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.03)}
+.panelhead{padding:14px 20px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;gap:12px;background:#fafafa}
+.panelhead h3{margin:0;font-size:15px;color:#262626}
+.toolbar{display:flex;gap:10px;padding:12px 20px;border-bottom:1px solid #f0f0f0;background:#fff}
+.toolbar input{max-width:400px;background:#fff}
+.toolbar select{width:220px}
+.tablewrap{overflow:auto;max-height:calc(100vh - 340px);min-height:160px}
+table{border-collapse:collapse;width:100%;white-space:nowrap;font-size:13px}
+th{text-align:left;background:#fafafa;color:#595959;font-size:12px;font-weight:600;padding:12px 16px;position:sticky;top:0;z-index:1;border-bottom:1px solid #f0f0f0}
+td{padding:12px 16px;border-top:1px solid #f0f0f0;vertical-align:middle;color:#262626}
+tr.click{cursor:pointer;transition:background .15s}
+tr.click:hover{background:#e6f7ff33}
+td .sub{display:block;color:#8c8c8c;font-size:11px;margin-top:2px}
+td.code{font-weight:700;color:#1890ff}
+td.wrap{white-space:normal;min-width:190px;max-width:400px}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;font-size:11px;font-weight:600;border-radius:4px;background:#f5f5f5;color:#595959;border:1px solid #d9d9d9;white-space:nowrap}
+.badge.orange{background:#fff7e6;color:#d46b08;border-color:#ffd591}
+.badge.green{background:#f6ffed;color:#389e0d;border-color:#b7eb8f}
+.badge.red{background:#fff1f0;color:#cf1322;border-color:#ffa39e}
+.badge.blue{background:#e6f7ff;color:#096dd9;border-color:#91d5ff}
+.empty{padding:48px 20px;text-align:center;color:var(--muted)}
+.tablefoot{padding:12px 20px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #f0f0f0;font-size:12px;color:var(--muted);background:#fafafa}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.pad{padding:20px}
+.flow{display:flex;gap:8px;flex-wrap:wrap;padding:16px 20px;background:#fff}
+.flow span{padding:6px 12px;background:#f5f5f5;border-radius:4px;font-size:12px;border:1px solid #d9d9d9;font-weight:500}
+.flow span.current{color:#1890ff;background:#e6f7ff;border-color:#91d5ff}
+.flow i{align-self:center;color:#bfbfbf;font-style:normal}
+.callout{border:1px solid #ffe58f;background:#fffbe6;color:#d48806;padding:12px 16px;border-radius:6px;font-size:13px;margin:12px 0}
+.info{border-color:#91d5ff;background:#e6f7ff;color:#096dd9}
+.fieldgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.fieldgrid .full{grid-column:1/-1}
+.field{margin-bottom:14px}
+dialog{border:0;border-radius:10px;width:min(960px,95vw);max-height:90vh;padding:0;color:var(--ink);box-shadow:0 20px 60px rgba(0,0,0,0.18)}
+dialog::backdrop{background:rgba(0,0,0,0.45);backdrop-filter:blur(3px)}
+.modalhead{padding:16px 24px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:white;z-index:4}
+.modalhead h2{margin:0;font-size:17px;color:#1f1f1f}
+.modalbody{padding:24px;overflow:auto}
+.modalfoot{display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #f0f0f0;padding:14px 24px;background:#fafafa}
+.section{border:1px solid #f0f0f0;border-radius:6px;margin:16px 0;overflow:hidden}
+.section h3{margin:0;padding:12px 16px;background:#fafafa;border-bottom:1px solid #f0f0f0;font-size:14px}
+.detailgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px 24px;padding:16px}
+.detailgrid dt{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase}
+.detailgrid dd{margin:3px 0 0;font-size:13px;color:#262626}
+.detailgrid .full{grid-column:1/-1}
+.detailgrid dl{margin:0}
+.timeline{padding:10px 18px}
+.event{padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:13px}
+.event small{display:block;color:var(--muted);font-size:11px}
+.event pre{white-space:pre-wrap;font-size:11px;color:var(--muted);background:#fafafa;padding:6px;border-radius:4px}
+.login{max-width:400px;margin:12vh auto;background:white;padding:36px;border:1px solid #f0f0f0;border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,0.06)}
+.login .brand{color:#001529;padding:0 0 24px}
+.login h2{font-size:20px;font-weight:600}
+.login button{width:100%}
+#toast{position:fixed;bottom:24px;right:24px;max-width:500px;padding:12px 18px;border-radius:6px;color:white;background:#001529;box-shadow:0 6px 16px rgba(0,0,0,0.15);z-index:50;display:none;white-space:pre-wrap;font-size:13px}
+#toast.error{background:#ff4d4f}
+.preview{max-height:340px;overflow:auto}
+.loginerror{color:#ff4d4f;white-space:pre-wrap;font-size:12px}
+.mobilebrand{display:none}
+.inline{display:flex;gap:8px}
+.progressbar{height:4px;background:#f0f0f0;border-radius:2px;margin-top:12px;overflow:hidden}
+.progressbar span{display:block;background:#1890ff;height:100%}
+.login small{display:block;margin-top:20px;color:var(--muted)}
+[hidden]{display:none!important}
+#busy{font-size:12px;color:#1890ff;font-weight:500}
+@media(max-width:1050px){.app{grid-template-columns:200px 1fr}.workspace{padding:20px}.sidebar{padding:20px 8px}.metrics{gap:12px}.metric{padding:14px}.metric .value{font-size:24px}.heading{align-items:flex-start}.heading .actions{justify-content:flex-end}header{padding:0 20px}}
+@media(max-width:760px){.app{display:block}.sidebar{position:relative;height:auto;padding:12px;display:block}.sidebar .brand,.sidebar .bottom,.navlabel{display:none}.sidebar nav{display:flex;overflow:auto}.nav{white-space:nowrap;width:auto}.nav .num{margin-left:8px}.workspace{padding:16px}.metrics{grid-template-columns:1fr 1fr}.grid2,.fieldgrid,.detailgrid{grid-template-columns:1fr}.heading{display:block}.heading .actions{justify-content:flex-start;margin-top:12px}header{height:56px;padding:0 16px}.toolbar{flex-wrap:wrap;padding:10px}.toolbar select{width:100%}.tablewrap{max-height:65vh}.fieldgrid .full,.detailgrid .full{grid-column:auto}.modalbody{padding:16px}.account .muted{display:none}}
+</style></head><body>
+<div id="login" class="login"><div class="brand">FOX<span>RUN</span><small>EXPRESS · QUẢN LÝ ĐƠN HÀNG</small></div><h2>Chào mừng trở lại.</h2><p class="muted">Đăng nhập để điều hành đơn hàng.</p><form id="loginForm"><div class="field"><label>Tài khoản</label><input id="username" autocomplete="username" required></div><div class="field"><label>Mật khẩu</label><input id="password" type="password" autocomplete="current-password" required></div><button class="primary">Đăng nhập</button></form><p id="loginError" class="loginerror"></p><small>FOXRUN OMS · Phiên bản vận hành 3.3</small></div>
+<div id="app" class="app" hidden><aside class="sidebar"><div class="brand">FOX<span>RUN</span><small>EXPRESS · VẬN HÀNH & ĐIỀU HÀNH</small></div><nav id="nav"></nav><div class="bottom"><span class="dot"></span>Hệ thống nội bộ<br><span>OMS / WORKFLOW 3.3</span></div></aside><div><header><div class="crumb">Điều hành <span style="margin:0 10px">/</span> <strong id="breadcrumb">Tổng quan</strong></div><div class="account"><span id="busy"></span><span class="avatar" id="avatar"></span><span id="account"></span><button class="small" id="logout">Thoát</button></div></header><main class="workspace"><div id="content"></div></main></div></div>
+<dialog id="modal"><div class="modalhead"><h2 id="modalTitle"></h2><button id="closeModal" aria-label="Đóng">✕</button></div><div class="modalbody" id="modalBody"></div></dialog><div id="toast" role="status"></div>
+<script>
+'use strict';
+const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let user,meta,orders=[],customers=[],view='dashboard',current=null,preview=null,page=1;let query='',customerFilter='',toastTimer,searchTimer,renderSeq=0;
+const views={dashboard:'Tổng quan',all:'Tất cả đơn',review:'Chờ duyệt',errors:'Đơn lỗi',warehouse:'Xử lý kho',shipping:'Vận chuyển',exceptions:'Cần xử lý',returns:'Hoàn hàng',finance:'Đối soát',stock:'Tồn kho',customers:'Khách hàng',imports:'Nhập & duyệt',periods:'Đợt đối soát',trash:'Thùng rác',audit:'Lịch sử',settings:'Thiết lập',tracking_manual:'Tracking thủ công',tracking_file:'Tracking từ file'};
+const financeNames={PENDING:'Chờ đối soát',REVIEW:'Chờ xác nhận',MISMATCH:'Có chênh lệch',RECONCILED:'Đã đối soát',SETTLED:'Đã thanh toán'};
+const actionNames={approve:'Duyệt & giữ tồn',picked:'Xác nhận đã lấy hàng',packed:'Xác nhận đóng gói',ship:'Bàn giao vận chuyển',cancel:'Hủy đơn'};
+const money=(v,c='')=>Number(v).toLocaleString('vi-VN',{minimumFractionDigits:2,maximumFractionDigits:2})+(c?' '+c:'');
+const date=v=>v?new Date(v.endsWith?.('Z')||/[+-]\d\d:\d\d$/.test(v)?v:v+'Z').toLocaleString('vi-VN'):'—';
+const can=(...roles)=>roles.includes(user?.role);
+function notice(s,error=false){clearTimeout(toastTimer);$('toast').textContent=s;$('toast').className=error?'error':'';$('toast').style.display='block';toastTimer=setTimeout(()=>$('toast').style.display='none',error?11000:5000)}
+async function api(path, options = {}) {
+  const isUpload = options.body instanceof FormData;
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers: {
+        'X-Foxrun-Request': '1',
+        ...(options.body && !isUpload ? {'Content-Type': 'application/json'} : {}),
+        ...options.headers
+      }
+    });
+  } catch {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
+    let serverReachable = false;
+    try {
+      const health = await fetch('/api/v1/health', {cache: 'no-store', signal: controller.signal});
+      serverReachable = health.ok;
+    } catch {
+      // The local server may have stopped or the LAN connection may be down.
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!serverReachable) {
+      throw Error('Mất kết nối với FOXRUN OMS. Kiểm tra cửa sổ chạy chương trình và mở lại địa chỉ OMS đang dùng.');
+    }
+    if (isUpload) {
+      throw Error('Kết nối với OMS vẫn hoạt động nhưng lượt tải file bị gián đoạn. Chọn lại file rồi bấm Xem trước.');
+    }
+    throw Error('Yêu cầu bị gián đoạn. Tải lại trang và kiểm tra kết quả trước khi thực hiện lại.');
+  }
+  if (response.status === 401 && user) {
+    location.reload();
+    throw Error('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
+  }
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw Error('FOXRUN OMS trả về phản hồi không hợp lệ (HTTP ' + response.status + '). Kiểm tra cửa sổ chạy chương trình.');
+  }
+  if (!response.ok) {
+    let message = data.detail;
+    if (Array.isArray(message)) {
+      message = message.map(item => (item.loc || []).slice(1).join('.') + ': ' + item.msg).join('\n');
+    }
+    throw Error(typeof message === 'string' ? message : JSON.stringify(message || data));
+  }
+  return data;
+}
+async function run(fn,button){if(button?.disabled)return;try{if(button)button.disabled=true;$('busy').textContent='Đang xử lý…';await fn()}catch(e){notice(e.message,true)}finally{if(button)button.disabled=false;$('busy').textContent=''}}
+const post=(p,b)=>api(p,{method:'POST',body:JSON.stringify(b)});
+function badge(value,group='stage'){let text=group==='stage'?meta.stages[value]:group==='transport'?meta.tracking[value]:financeNames[value];let color=['ERROR','DELIVERY_FAILED','EXCEPTION','MISMATCH'].includes(value)?'red':['DELIVERED','RECONCILED','SETTLED'].includes(value)?'green':['REVIEW','WAIT_STOCK','RETURNING','RETURNED'].includes(value)?'orange':['SHIPPED','PICKING','PACKING','OUT_FOR_DELIVERY','IN_TRANSIT'].includes(value)?'blue':'';return `<span class="badge ${color}">${esc(text||value)}</span>`}
+function match(o){let terms=query.split(/[\n,;]+/).map(s=>s.trim().toLowerCase()).filter(Boolean);return (!customerFilter||o.customer_id===Number(customerFilter))&&(!terms.length||terms.some(t=>t.startsWith('#')?[o.code,o.tracking].some(s=>s.toLowerCase().split('-').at(-1)===t.slice(1)):[o.code,o.tracking,o.customer,o.recipient,o.phone].some(s=>s.toLowerCase().includes(t))))}
+function inView(o,v){return ({all:true,review:o.stage==='REVIEW',errors:o.stage==='ERROR',warehouse:['WAIT_STOCK','PICKING','PACKING','READY'].includes(o.stage),shipping:o.stage==='SHIPPED'&&!['DELIVERED','RETURNED'].includes(o.transport),exceptions:o.stale||['DELIVERY_FAILED','EXCEPTION'].includes(o.transport),returns:['RETURNING','RETURNED'].includes(o.transport),finance:['DELIVERED','RETURNED'].includes(o.transport)&&o.finance!=='SETTLED'})[v]||false}
+function count(v){return orders.filter(o=>inView(o,v)).length}
+const viewIcons={dashboard:'📊',all:'📦',review:'⏳',errors:'⚠️',warehouse:'🏭',shipping:'🚚',exceptions:'🚨',returns:'🔄',finance:'💰',stock:'🏬',customers:'👥',imports:'📥',periods:'📑',trash:'🗑️',audit:'🕒',settings:'⚙️',tracking_manual:'🔍',tracking_file:'📄'};
+function drawNav(){let groups=[['ĐIỀU HÀNH',['dashboard','all','review','errors','warehouse','shipping','exceptions','returns','finance']],['DỮ LIỆU',['stock','customers','imports','periods','trash','audit','settings']]];$('nav').innerHTML=groups.map(([name,keys])=>`<div class="navlabel">${name}</div>`+keys.map(k=>`<button class="nav ${view===k?'active':''}" data-nav="${k}"><span><span style="margin-right:8px;font-size:13px">${viewIcons[k]||'•'}</span>${views[k]}</span>${['review','errors','exceptions'].includes(k)?`<span class="num">${count(k)}</span>`:''}</button>`).join('')).join('');document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>navigate(b.dataset.nav))}
+async function refresh(){[orders,customers]=await Promise.all([api('/api/wf/orders'),api('/api/v1/customers')]);drawNav()}
+let isNavigating=false;
+async function navigate(v,updateHash=true){
+  clearTimeout(searchTimer);
+  renderSeq++;
+  const currentSeq = renderSeq;
+  if(!views[v])v='dashboard';
+  view=v;page=1;query='';customerFilter='';
+  if($('breadcrumb'))$('breadcrumb').textContent=views[v];
+  drawNav();
+  if(updateHash&&location.hash!=='#'+v){
+    isNavigating=true;
+    location.hash='#'+v;
+    setTimeout(()=>{isNavigating=false},0);
+  }
+  await run(render);
+}
+window.addEventListener('hashchange',()=>{
+  if(isNavigating)return;
+  const target=location.hash.replace(/^#/,'');
+  if(views[target]&&target!==view){
+    navigate(target,false);
+  }
+});
+function heading(title,sub,buttons=''){return `<div class="heading"><div><div class="eyebrow">FOXRUN · HỆ THỐNG ĐIỀU HÀNH</div><h1>${title}</h1><p>${sub}</p></div><div class="actions">${buttons}</div></div>`}
+function newButton(){return can('admin','operator')?'<button class="primary" id="newOrder">+ Tạo đơn</button>':''}
+function bindCommon(){if($('newOrder'))$('newOrder').onclick=()=>orderForm();if($('refresh'))$('refresh').onclick=()=>run(async()=>{await refresh();await render()})}
+function customerOptions(selected=''){return customers.map(c=>`<option value="${c.id}" ${String(c.id)===String(selected)?'selected':''}>${esc(c.name)} · ${esc(c.code)}</option>`).join('')}
+async function render(){
+ const currentSeq = renderSeq;
+ let h='';if(view==='dashboard'){
+ let totals={};for(const o of orders.filter(o=>['DELIVERED','RETURNED'].includes(o.transport))){totals[o.currency]??={cod:0,received:0,balance:0};let t=totals[o.currency];t.cod+=o.transport==='DELIVERED'?Number(o.cod):0;t.received+=Number(o.carrier_received);t.balance+=Number(o.seller_balance)}
+ h=heading('Tổng quan','Theo dõi đơn hàng, hàng hóa và dòng tiền trong một luồng.',`<button id="refresh">↻ Làm mới</button>${newButton()}`)+`<div class="metrics">${[['Tổng đơn',orders.length,'Toàn bộ nguồn dữ liệu','all'],['Chờ xử lý kho',count('warehouse'),'Lấy hàng · Đóng gói · Bàn giao','warehouse'],['Cần xử lý',count('exceptions'),'Giao lỗi hoặc quá 5 ngày','exceptions'],['Chờ đối soát',count('finance'),'Đã có kết quả vận chuyển','finance']].map(([n,v,s,k])=>`<button class="metric ${k==='exceptions'?'warn':''}" data-go="${k}"><div class="label">${n}</div><div class="value">${v}</div><small>${s}</small></button>`).join('')}</div><div class="panel"><div class="panelhead"><h3>Luồng xử lý</h3><span class="muted">Nhấn từng bước để xem đơn</span></div><div class="flow">${[['review','Duyệt đơn'],['warehouse','Lấy → Đóng → Giao'],['shipping','Vận chuyển'],['finance','Đối soát & thanh toán']].map(([k,n])=>`<button class="small" data-go="${k}">${n} <span class="muted">${count(k)}</span></button>`).join('<i>→</i>')}</div></div><div class="grid2"><div class="panel"><div class="panelhead"><h3>Việc cần ưu tiên</h3></div><div class="pad">${[['errors','Đơn cần sửa dữ liệu'],['review','Đơn chờ duyệt'],['exceptions','Giao hàng cần can thiệp'],['returns','Đơn hoàn cần theo dõi']].map(([k,n])=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line)"><span>${n}</span><button class="small" data-go="${k}">${count(k)} đơn →</button></div>`).join('')}</div></div><div class="panel"><div class="panelhead"><h3>Dòng tiền theo tiền tệ</h3></div><div class="tablewrap"><table><thead><tr><th>Loại tiền</th><th>COD đã giao</th><th>Hãng đã chuyển</th><th>Số dư seller</th></tr></thead><tbody>${Object.entries(totals).map(([c,t])=>`<tr><td>${c}</td><td>${money(t.cod)}</td><td>${money(t.received)}</td><td>${money(t.balance)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">Chưa có đơn đến bước đối soát.</td></tr>'}</tbody></table></div></div></div><div class="panel"><div class="panelhead"><h3>Đơn hàng gần đây</h3><button class="small" data-go="all">Xem tất cả →</button></div>${orderTable(orders.slice(0,6))}</div>`;
+ }else if(['all','review','errors','warehouse','shipping','exceptions','returns','finance'].includes(view)){
+ let extraButtons='';if(view==='shipping'){extraButtons=`<button class="small" data-go="tracking_manual" id="btnTrackingManual">+ Cập nhật tracking thủ công</button><button class="small" data-go="tracking_file" id="btnTrackingFile">+ Nhập tracking từ file</button>`;}
+ h=heading(views[view],view==='exceptions'?'Cảnh báo dựa trên thời điểm thay đổi tracking gần nhất.':view==='finance'?'Quản lý tiền thu hộ, phí dịch vụ và khoản phải trả seller.':'Mở từng đơn để kiểm tra thông tin và chuyển bước.',extraButtons+`<a href="/api/wf/export"><button>Xuất CSV</button></a><button id="refresh">↻ Làm mới</button>${newButton()}`)+`<div class="panel"><div class="toolbar"><input id="searchInput" placeholder="Tìm mã đơn, vận đơn, tên… #125 tìm đúng ID cuối"><select id="customerFilter"><option value="">Tất cả khách hàng</option>${customerOptions()}</select></div><div id="listArea"></div></div>`;
+ }else if(view==='stock'){
+ const stocks=await api('/api/wf/stock');if(currentSeq!==renderSeq || view!=='stock') return;h=heading('Tồn kho','Tồn vật lý, hàng đã giữ cho đơn và số lượng có thể bán.',can('admin','warehouse')?'<button class="primary" id="adjustStock">+ Nhập / điều chỉnh tồn</button>':'')+`<div class="callout info">Bản này quản lý một kho logic theo từng khách hàng và SKU. Giữ tồn khi duyệt; trừ tồn vật lý khi bàn giao.</div><div class="panel"><div class="tablewrap"><table><thead><tr><th>Khách hàng</th><th>SKU</th><th>Tồn vật lý</th><th>Đã giữ</th><th>Khả dụng</th></tr></thead><tbody>${stocks.map(s=>`<tr><td>${esc(s.customer)}</td><td class="mono">${esc(s.sku)}</td><td>${s.on_hand}</td><td>${s.reserved}</td><td><strong>${s.available}</strong></td></tr>`).join('')||'<tr><td colspan="5" class="empty">Chưa có tồn kho. Nhập tồn để bắt đầu xử lý đơn.</td></tr>'}</tbody></table></div></div><button id="stockHistory">Xem lịch sử nhập / xuất</button>`;
+ }else if(view==='customers'){
+ h=heading('Khách hàng','Quản lý seller và các mã bí danh dùng để nhận diện đơn.',can('admin','operator')?'<button class="primary" id="addCustomer">+ Thêm khách</button>':'')+`<div class="panel"><div class="tablewrap"><table><thead><tr><th>Khách hàng</th><th>Mã chính</th><th>Bí danh</th><th>Số đơn</th><th></th></tr></thead><tbody>${customers.map(c=>`<tr><td><strong>${esc(c.name)}</strong></td><td class="mono">${esc(c.code)}</td><td>${c.aliases.map(a=>`<span class="badge">${esc(a)}</span>`).join(' ')||'—'}</td><td>${orders.filter(o=>o.customer_id===c.id).length}</td><td><button class="small" data-customer="${c.id}">Mở khách hàng →</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">Thêm khách hàng đầu tiên để tạo đơn.</td></tr>'}</tbody></table></div></div>`;
+ }else if(view==='imports'){
+ h=heading('Nhập & duyệt','Xem trước toàn bộ dữ liệu trước khi xác nhận ghi vào hệ thống.')+`<div class="grid2"><div class="panel"><div class="panelhead"><h3>Nhập đơn hàng</h3></div><div class="pad"><p class="muted">Một SKU một dòng. Các dòng cùng khách và mã đơn được gộp; COD giữ ở cấp đơn.</p><div class="field"><label>Nguồn dữ liệu</label><select id="importSource"><option value="excel">Excel / CSV</option><option value="pancake">Pancake · file xuất</option></select></div><div class="field"><label>Định dạng COD trong file</label><select id="codFormat"><option value="plain">Số chuẩn · 1470 hoặc 150.50</option><option value="vn">Dấu chấm ngăn nghìn · 1.470 = 1470</option></select></div><div class="field"><label>Chọn file</label><input id="orderFile" type="file" accept=".csv,.xlsx"></div><button class="primary" id="previewOrders" ${can('admin','operator')?'':'disabled'}>Kiểm tra & xem trước</button><p class="muted" style="font-size:11px;margin-top:15px">Cột: code, customer, cod, currency, sku, quantity, recipient, phone, country, original_address, full_address, province, district, postcode, tracking.</p><button class="small" id="sampleOrders">Tải file mẫu đơn</button></div></div><div class="panel"><div class="panelhead"><h3>Cập nhật tracking từ file</h3></div><div class="pad"><p class="muted">Mỗi vận đơn một dòng; xem trước trạng thái và xung đột trước khi cập nhật.</p><div class="field"><label>Chọn file tracking</label><input id="trackingFile" type="file" accept=".csv,.xlsx"></div><button class="primary" id="previewTracking" ${can('admin','operator','warehouse')?'':'disabled'}>Xem trước tracking</button><p class="muted" style="font-size:11px;margin-top:15px">Cột: tracking, status, note. Trạng thái: IN_TRANSIT, OUT_FOR_DELIVERY, DELIVERED, DELIVERY_FAILED, RETURNING, RETURNED, EXCEPTION.</p><button class="small" id="sampleTracking">Tải file mẫu tracking</button> <button class="small" data-go="tracking_file">Mở trang Tracking từ file →</button></div></div></div><div class="callout info">Pancake hiện nhận file xuất qua bước duyệt. Chưa kết nối đồng bộ API trực tiếp.</div><div id="previewArea"></div>`;
+ }else if(view==='audit'){
+ const rows=await api('/api/wf/audit');if(currentSeq!==renderSeq || view!=='audit') return;h=heading('Lịch sử','Lịch sử 500 thao tác gần nhất, ghi nhận người thực hiện và thay đổi.')+`<div class="panel"><div class="tablewrap"><table><thead><tr><th>Thời gian</th><th>Người thao tác</th><th>Hoạt động</th><th>Chi tiết</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${date(r.at)}</td><td>${esc(r.actor)}</td><td>${esc(auditName(r.action))}</td><td class="wrap">${esc(JSON.stringify(r.detail))}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">Chưa có hoạt động.</td></tr>'}</tbody></table></div></div>`;
+ }else if(view==='settings'){
+ h=heading('Thiết lập','Tài khoản, phân quyền và trạng thái tích hợp.')+`<div class="grid2"><div class="panel"><div class="panelhead"><h3>Tài khoản của bạn</h3></div><div class="pad"><p><strong>${esc(user.username)}</strong> · ${esc(meta.roles[user.role])}</p><button id="changePassword">Đổi mật khẩu</button></div></div><div class="panel"><div class="panelhead"><h3>Kết nối</h3></div><div class="pad"><p><span class="dot"></span> Dữ liệu trên máy chủ FOXRUN</p><p>Pancake: <span class="badge orange">Nhập file có duyệt</span></p><p>AI địa chỉ: <span class="badge">${meta.capabilities.ai_live?'Đã cấu hình':'Chưa cấu hình'}</span></p><p class="muted">Các nghiệp vụ đơn, kho và tiền không dùng token AI.</p></div></div></div><div class="panel"><div class="panelhead"><h3>Token AI chuẩn hóa địa chỉ</h3><button id="aiUsage" class="small">Xem sử dụng</button></div><div class="pad" id="aiUsageArea">Cấu hình GEMINI_API_KEY và GEMINI_MODEL trên máy chủ để bật. Mỗi lượt tối đa 20 địa chỉ; có cache và bước duyệt.</div></div>${can('admin')?'<div class="panel"><div class="panelhead"><h3>Tài khoản nhân viên</h3><button class="primary small" id="addUser">+ Tạo tài khoản</button></div><div class="pad" id="usersArea"></div></div>':''}`;
+ }
+ if(currentSeq!==renderSeq) return;
+ if($('content')) $('content').innerHTML=h;bindCommon();document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>navigate(b.dataset.go));bindOrderRows();
+ if($('listArea')){drawList();if($('searchInput'))$('searchInput').value=query;if($('customerFilter'))$('customerFilter').value=customerFilter;if($('searchInput'))$('searchInput').oninput=e=>{clearTimeout(searchTimer);query=e.target.value;page=1;searchTimer=setTimeout(drawList,150)};if($('customerFilter'))$('customerFilter').onchange=e=>{customerFilter=e.target.value;page=1;drawList()}}
+ if($('adjustStock'))$('adjustStock').onclick=stockForm;if($('stockHistory'))$('stockHistory').onclick=()=>run(stockHistory);
+ if($('addCustomer'))$('addCustomer').onclick=customerForm;document.querySelectorAll('[data-customer]').forEach(b=>b.onclick=()=>customerDetail(Number(b.dataset.customer)));
+ if($('previewOrders'))$('previewOrders').onclick=e=>run(()=>previewFile('orders'),e.target);if($('previewTracking'))$('previewTracking').onclick=e=>run(()=>previewFile('tracking'),e.target);
+ if($('sampleOrders'))$('sampleOrders').onclick=()=>download('foxrun_order_sample.csv','code,customer,cod,currency,sku,quantity,recipient,phone,country,original_address,full_address,province,district,postcode,tracking\nFR-MY-000125,HL,150,MYR,MASK,2,Khach mau,0123456789,MY,"106 Kampung Banggol Peradong Manir 21200 Kuala Terengganu Terengganu","106 Kampung Banggol Peradong Manir 21200 Kuala Terengganu Terengganu",Terengganu,Kuala Terengganu,21200,\nFR-MY-000125,HL,150,MYR,SERUM,1,Khach mau,0123456789,MY,"106 Kampung Banggol Peradong Manir 21200 Kuala Terengganu Terengganu","106 Kampung Banggol Peradong Manir 21200 Kuala Terengganu Terengganu",Terengganu,Kuala Terengganu,21200,');
+ if($('sampleTracking'))$('sampleTracking').onclick=()=>download('foxrun_tracking_sample.csv','tracking,status,note\nTEST-MY-000125,DELIVERED,Du lieu mo phong');
+ if($('aiUsage'))$('aiUsage').onclick=()=>run(async()=>{let d=await api('/api/wf/ai/status');if($('aiUsageArea'))$('aiUsageArea').innerHTML='<p>Mô hình: '+esc(d.model||'Chưa cấu hình')+'</p>'+`<table><thead><tr><th>Thời gian</th><th>Địa chỉ yêu cầu</th><th>Bộ nhớ đệm (Cache)</th><th>Đầu vào (Input)</th><th>Đầu ra (Output)</th><th>Tổng token</th></tr></thead><tbody>${d.usage.map(u=>`<tr><td>${date(u.at)}</td><td>${u.requested}</td><td>${u.cached}</td><td>${u.prompt_tokens}</td><td>${u.output_tokens}</td><td>${u.total_tokens}</td></tr>`).join('')}</tbody></table>`});if($('changePassword'))$('changePassword').onclick=passwordForm;if($('addUser'))$('addUser').onclick=userForm;if($('usersArea')){let us=await api('/api/wf/users');if(currentSeq!==renderSeq || view!=='settings' || !$('usersArea')) return;$('usersArea').innerHTML=us.map(u=>`<p><strong>${esc(u.username)}</strong> <span class="badge">${esc(meta.roles[u.role])}</span></p>`).join('')}
+}
+function orderTable(rows){return `<div class="tablewrap"><table><thead><tr><th>Mã đơn / Nguồn</th><th>Khách hàng</th><th>Xử lý đơn</th><th>Vận chuyển</th><th>COD</th><th>Đối soát</th><th>Sản phẩm</th></tr></thead><tbody>${rows.map(o=>`<tr class="click" tabindex="0" data-order="${o.id}" aria-label="Mở đơn ${esc(o.code)}"><td class="code">${esc(o.code)}<span class="sub">${esc(o.source)} · ${date(o.created_at)}</span></td><td>${esc(o.customer)}<span class="sub">${esc(o.recipient||'Chưa có người nhận')}</span></td><td>${badge(o.stage)}${o.issue?`<span class="sub" style="max-width:220px;white-space:normal;color:#b76d37">${esc(o.issue)}</span>`:''}</td><td>${badge(o.transport,'transport')}<span class="sub mono">${esc(o.tracking||'Chưa có vận đơn')}${o.stale?' · ⚠ Quá 5 ngày':''}</span></td><td>${money(o.cod,o.currency)}</td><td>${badge(o.finance,'finance')}</td><td>${o.items.length} SKU<span class="sub">${o.items.reduce((s,i)=>s+i.quantity,0)} sản phẩm</span></td></tr>`).join('')||'<tr><td colspan="7" class="empty">Chưa có đơn trong danh sách này.</td></tr>'}</tbody></table></div>`}
+function drawList(){const la=$('listArea');if(!la)return;let rows=orders.filter(o=>inView(o,view)&&match(o));let max=Math.max(1,Math.ceil(rows.length/50));page=Math.min(page,max);la.innerHTML=orderTable(rows.slice((page-1)*50,page*50))+`<div class="tablefoot"><span>${rows.length} đơn · 50 đơn / trang</span><div class="actions"><button class="small" id="prevPage" ${page===1?'disabled':''}>←</button> ${page} / ${max} <button class="small" id="nextPage" ${page===max?'disabled':''}>→</button></div></div>`;if($('prevPage'))$('prevPage').onclick=()=>{page--;drawList()};if($('nextPage'))$('nextPage').onclick=()=>{page++;drawList()};bindOrderRows()}
+function bindOrderRows(){document.querySelectorAll('[data-order]').forEach(r=>{r.onclick=()=>run(()=>openOrder(Number(r.dataset.order)));r.onkeydown=e=>{if(e.key==='Enter')r.click()}})}
+function openModal(title,body){$('modalTitle').textContent=title;$('modalBody').innerHTML=body;if(!$('modal').open)$('modal').showModal()}
+$('closeModal').onclick=()=>$('modal').close();$('modal').addEventListener('click',e=>{if(e.target===$('modal'))$('modal').close()});
+function field(label,name,value='',type='text',full=false,extra=''){return `<div class="${full?'full ':''}field"><label for="f_${name}">${label}</label><input id="f_${name}" name="${name}" type="${type}" value="${esc(value)}" ${extra}></div>`}
+function area(label,name,value='',extra=''){return `<div class="full field"><label for="f_${name}">${label}</label><textarea id="f_${name}" name="${name}" ${extra}>${esc(value)}</textarea></div>`}
+function formData(id){return Object.fromEntries(new FormData($(id)).entries())}
+function parseItems(text){return text.split('\n').filter(x=>x.trim()).map(line=>{let parts=line.split('|');let n=Number(parts[1]);if(parts.length!==2||!parts[0].trim()||!Number.isInteger(n)||n<1)throw Error('Nhập mỗi dòng sản phẩm theo dạng SKU | số lượng nguyên dương.');return {sku:parts[0].trim(),quantity:n}})}
+function orderForm(o=null){if(!customers.length){notice('Thêm khách hàng trước khi tạo đơn.',true);navigate('customers');return}let isEdit=!!o;
+ openModal(isEdit?'Sửa đơn '+o.code:'Tạo đơn hàng',`<p class="muted">Có thể lưu đơn thiếu thông tin vào Đơn lỗi để bổ sung sau.</p><form id="orderForm"><div class="fieldgrid">${!isEdit?`<div class="field"><label>Khách hàng</label><select name="customer_id">${customerOptions()}</select></div>${field('Mã đơn','code','','text',false,'required maxlength="200"')}`:''}${field('Người nhận','recipient',o?.recipient||'')}${field('Số điện thoại','phone',o?.phone||'')}
+ <div class="field"><label>Thị trường</label><select name="country">${[['MY','Malaysia'],['TH','Thái Lan'],['PH','Philippines'],['ID','Indonesia'],['US','Mỹ'],['VN','Việt Nam']].map(([k,v])=>`<option value="${k}" ${o?.country===k?'selected':''}>${v}</option>`).join('')}</select></div><div class="field"><label>Tiền tệ</label><select name="currency">${['MYR','THB','PHP','IDR','USD','VND'].map(v=>`<option ${o?.currency===v?'selected':''}>${v}</option>`).join('')}</select></div>${area('Địa chỉ gốc','original_address',o?.original_address||'',isEdit?'readonly':'')}${area('Địa chỉ chi tiết đầy đủ, gồm postcode và tỉnh/bang','full_address',o?.full_address||'')}${field('Tỉnh / bang','province',o?.province||'')}${field('Huyện / thành phố','district',o?.district||'')}${field('Postcode','postcode',o?.postcode||'')}${field('COD cấp đơn','cod',o?.cod||'0','number',false,'min="0" step="0.01" required')}${field('Nhân viên phụ trách','assigned',o?.assigned||'')}${area('Sản phẩm · mỗi dòng: SKU | số lượng','itemsText',o?.items.map(i=>i.sku+' | '+i.quantity).join('\n')||'','required placeholder="MASK | 2\nSERUM | 1"')}${area('Ghi chú','note',o?.note||'')}</div><div class="modalfoot"><button type="button" id="cancelForm">Hủy</button><button class="primary">${isEdit?'Lưu thay đổi':'Tạo đơn'}</button></div></form>`);
+ $('cancelForm').onclick=()=>isEdit?openOrder(o.id):$('modal').close();$('orderForm').onsubmit=e=>{e.preventDefault();run(async()=>{let data=formData('orderForm');data.items=parseItems(data.itemsText);delete data.itemsText;data.full_address=data.full_address||data.original_address;if(isEdit){data.version=o.version;await api('/api/wf/orders/'+o.id,{method:'PATCH',body:JSON.stringify(data)})}else{data.customer_id=Number(data.customer_id);data.source='manual';await post('/api/wf/orders',data)}$('modal').close();await refresh();await render();notice('Đã lưu đơn hàng.');if(isEdit)await openOrder(o.id)},e.submitter)}
+}
+function auditName(a){return ({'order.create':'Tạo đơn','order.edit':'Sửa đơn','workflow.approve':'Duyệt đơn','workflow.picked':'Lấy hàng','workflow.packed':'Đóng gói','workflow.ship':'Bàn giao','workflow.cancel':'Hủy đơn','tracking.update':'Cập nhật vận chuyển','return.receive':'Kiểm nhận hoàn','finance.save':'Lưu đối soát','stock.adjust':'Điều chỉnh tồn','customer.create':'Tạo khách','customer.edit':'Sửa khách','alias.create':'Thêm bí danh','alias.delete':'Xóa bí danh','import.confirm':'Xác nhận nhập','import.order':'Nhập đơn từ file','address.confirm':'Duyệt địa chỉ AI','user.create':'Tạo tài khoản','user.password':'Đổi mật khẩu'})[a]||a}
+async function openOrder(id){current=await api('/api/wf/orders/'+id);let o=current;let stages=['REVIEW','PICKING','PACKING','READY','SHIPPED'];let buttons=[];
+ if(can('admin','operator')&&['REVIEW','ERROR','WAIT_STOCK'].includes(o.stage))buttons.push('<button id="editOrder">Sửa thông tin</button>', '<button id="aiAddress">Chuẩn hóa địa chỉ AI</button>',`<button class="primary" data-action="approve">Duyệt & giữ tồn</button>`);
+ if(can('admin','warehouse')){let next={PICKING:'picked',PACKING:'packed',READY:'ship'}[o.stage];if(next)buttons.push(`<button class="primary" data-action="${next}">${actionNames[next]}</button>`)}
+ if(can('admin','operator')&&!['SHIPPED','CANCELLED'].includes(o.stage))buttons.push('<button class="danger" data-action="cancel">Hủy đơn</button>');
+ openModal(o.code,`<div class="actions">${badge(o.stage)}${badge(o.transport,'transport')}${badge(o.finance,'finance')}<span class="muted">Phiên bản ${o.version}</span></div>${o.issue?`<div class="callout">${esc(o.issue)}</div>`:''}${o.stale?'<div class="callout">Tracking không thay đổi quá 5 ngày. Cần liên hệ hãng vận chuyển.</div>':''}<div class="flow">${stages.map((s,i)=>`<span class="${o.stage===s?'current':''}">${i+1}. ${meta.stages[s]}</span>`).join('<i>→</i>')}</div><div class="actions">${buttons.join('')}</div><div class="section"><h3>Thông tin đơn hàng</h3><div class="detailgrid">${[['Khách hàng',o.customer],['Nguồn',o.source],['Người nhận',o.recipient],['Số điện thoại',o.phone],['Thị trường',o.country],['COD',money(o.cod,o.currency)],['Tỉnh / bang',o.province],['Huyện / thành phố',o.district],['Postcode',o.postcode],['Phụ trách',o.assigned],['Mã vận đơn',o.tracking],['Hãng vận chuyển',o.carrier]].map(([k,v])=>`<dl><dt>${k}</dt><dd>${esc(v||'—')}</dd></dl>`).join('')}<dl class="full"><dt>Địa chỉ chi tiết</dt><dd>${esc(o.full_address||'—')}</dd></dl><dl class="full"><dt>Địa chỉ gốc</dt><dd>${esc(o.original_address||'—')}</dd></dl><dl class="full"><dt>Ghi chú</dt><dd>${esc(o.note||'—')}</dd></dl></div></div><div class="section"><h3>Sản phẩm</h3><table><thead><tr><th>SKU</th><th>Số lượng</th></tr></thead><tbody>${o.items.map(i=>`<tr><td class="mono">${esc(i.sku)}</td><td>${i.quantity}</td></tr>`).join('')}</tbody></table></div>
+ ${o.stage==='SHIPPED'?`<div class="section"><h3>Vận chuyển & hàng hoàn</h3><div class="pad"><p>Mã vận đơn: <strong class="mono">${esc(o.tracking)}</strong> · ${esc(o.carrier)}</p><p class="muted">Cập nhật gần nhất: ${date(o.tracking_at)}</p><div class="actions">${can('admin','operator','warehouse')?'<button id="trackingEdit">Cập nhật tracking</button>':''}${o.transport==='RETURNED'&&!o.return_received&&can('admin','warehouse')?'<button class="primary" id="returnReceive">Kiểm nhận hàng hoàn</button>':''}${o.return_received?'<span class="badge green">Kho đã kiểm nhận hoàn</span>':''}</div>${o.tracking_history.length?'<div class="timeline">'+o.tracking_history.slice(0,8).map(x=>`<div class="event">${badge(x.status,'transport')} ${esc(x.note)}<small>${date(x.at)} · ${esc(x.source)}</small></div>`).join('')+'</div>':''}</div></div>`:''}
+ ${['DELIVERED','RETURNED'].includes(o.transport)?`<div class="section"><h3>Đối soát · ${o.currency}</h3><div class="detailgrid">${[['Phí vận chuyển',o.carrier_fee],['Phí dịch vụ FOXRUN',o.service_fee],['Hãng cần chuyển ròng',o.carrier_expected],['Hãng thực chuyển',o.carrier_received],['Chênh lệch',o.carrier_difference],['Phải trả seller (âm = phải thu)',o.seller_due],['Đã thanh toán seller',o.seller_paid],['Số dư seller',o.seller_balance]].map(([k,v])=>`<dl><dt>${k}</dt><dd>${money(v)}</dd></dl>`).join('')}</div><div class="pad"><p class="muted">Tham chiếu: ${esc(o.settlement_reference||'Chưa có')}</p>${can('admin','finance')?'<button class="primary" id="financeEdit">Ghi nhận / đối soát tiền</button>':''}</div></div>`:''}
+ <div class="section"><h3>Lịch sử của đơn</h3><div class="timeline">${o.history.map(x=>`<div class="event"><strong>${esc(auditName(x.action))}</strong><small>${date(x.at)} · ${esc(x.actor)}</small><details><summary>Chi tiết thay đổi</summary><pre>${esc(JSON.stringify(x.detail,null,2))}</pre></details></div>`).join('')||'<p class="muted">Chưa có lịch sử workflow.</p>'}</div></div>`);
+ if($('editOrder'))$('editOrder').onclick=()=>orderForm(o);if($('aiAddress'))$('aiAddress').onclick=()=>aiForm(o);document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>actionForm(o,b.dataset.action));if($('trackingEdit'))$('trackingEdit').onclick=()=>trackingForm(o);if($('returnReceive'))$('returnReceive').onclick=()=>returnForm(o);if($('financeEdit'))$('financeEdit').onclick=()=>financeForm(o);
+}
+async function afterMutation(id,message){await refresh();await render();await openOrder(id);notice(message)}
+function actionForm(o,action){let description={approve:'Kiểm tra dữ liệu, kiểm tồn và giữ hàng cho toàn bộ SKU. Nếu thiếu hàng, đơn sẽ chuyển sang Chờ hàng.',picked:'Xác nhận đã lấy đúng SKU và số lượng để chuyển sang đóng gói.',packed:'Xác nhận đã kiểm hàng và đóng gói đủ số lượng. Đơn sẽ chuyển sang Chờ bàn giao.',ship:'Xác nhận kiện đã được bàn giao thực tế. Hệ thống sẽ trừ tồn vật lý và bắt đầu theo dõi vận chuyển.',cancel:'Hủy đơn và giải phóng toàn bộ tồn đã giữ.'}[action];openModal(actionNames[action]+' · '+o.code,`<p>${description}</p><form id="actionForm"><div class="fieldgrid">${action==='ship'?field('Mã vận đơn','tracking',o.tracking,'text',false,'required')+field('Hãng vận chuyển','carrier',o.carrier,'text',false,'required'):''}${area(action==='cancel'?'Lý do hủy':'Ghi chú','note','','maxlength="2000" '+(action==='cancel'?'required':''))}</div><div class="modalfoot"><button type="button" id="backDetail">Quay lại</button><button class="primary">Xác nhận</button></div></form>`);$('backDetail').onclick=()=>openOrder(o.id);$('actionForm').onsubmit=e=>{e.preventDefault();run(async()=>{await post('/api/wf/orders/'+o.id+'/action',{...formData('actionForm'),version:o.version,action});await afterMutation(o.id,'Đã xử lý thao tác.')},e.submitter)}}
+function trackingForm(o){openModal('Cập nhật vận chuyển · '+o.code,`<form id="trackForm"><div class="field"><label>Trạng thái mới</label><select name="status">${Object.entries(meta.tracking).filter(([k])=>k!=='NOT_SHIPPED'&&k!=='UNKNOWN').map(([k,v])=>`<option value="${k}" ${o.transport===k?'selected':''}>${v}</option>`).join('')}</select></div>${area('Ghi chú / căn cứ cập nhật','note','','required')}<div class="callout info">Cập nhật thủ công theo thông tin hãng vận chuyển. Chương trình chưa tự tra cứu tracking trực tuyến.</div><div class="modalfoot"><button type="button" id="backDetail">Quay lại</button><button class="primary">Xác nhận cập nhật</button></div></form>`);$('backDetail').onclick=()=>openOrder(o.id);$('trackForm').onsubmit=e=>{e.preventDefault();run(async()=>{await post('/api/wf/orders/'+o.id+'/tracking',{version:o.version,...formData('trackForm')});await afterMutation(o.id,'Đã cập nhật vận chuyển.')},e.submitter)}}
+function returnForm(o){openModal('Kiểm nhận hàng hoàn · '+o.code,`<form id="returnForm"><p class="muted">Chỉ hàng tốt được nhập lại tồn khả dụng. Tổng tốt + hỏng + thiếu phải khớp số xuất.</p><div class="tablewrap"><table><thead><tr><th>SKU / số xuất</th><th>Hàng tốt</th><th>Hỏng</th><th>Thiếu</th></tr></thead><tbody>${o.items.map((i,n)=>`<tr><td>${esc(i.sku)} / ${i.quantity}</td><td><input name="good_${n}" type="number" min="0" value="${i.quantity}" required></td><td><input name="damaged_${n}" type="number" min="0" value="0" required></td><td><input name="missing_${n}" type="number" min="0" value="0" required></td></tr>`).join('')}</tbody></table></div>${area('Ghi chú kiểm nhận','note')}<div class="modalfoot"><button type="button" id="backDetail">Quay lại</button><button class="primary">Xác nhận kho đã nhận</button></div></form>`);$('backDetail').onclick=()=>openOrder(o.id);$('returnForm').onsubmit=e=>{e.preventDefault();run(async()=>{let d=formData('returnForm');let lines=o.items.map((i,n)=>({sku:i.sku,good:Number(d['good_'+n]),damaged:Number(d['damaged_'+n]),missing:Number(d['missing_'+n])}));await post('/api/wf/orders/'+o.id+'/return',{version:o.version,lines,note:d.note});await afterMutation(o.id,'Đã ghi nhận hàng hoàn và cập nhật tồn hàng tốt.')},e.submitter)}}
+function financeForm(o){openModal('Đối soát tiền · '+o.code,`<form id="financeForm"><div class="callout info">Tiền hãng cần chuyển = COD đã thu − phí vận chuyển. Phải trả seller = tiền hãng cần chuyển − phí FOXRUN. Số âm thể hiện khoản phải thu.</div><div class="fieldgrid">${field('Phí vận chuyển · '+o.currency,'carrier_fee',o.carrier_fee,'number',false,'min="0" step="0.01" required')}${field('Phí FOXRUN · '+o.currency,'service_fee',o.service_fee,'number',false,'min="0" step="0.01" required')}${field('Hãng thực chuyển ròng','carrier_received',o.carrier_received,'number',false,'step="0.01" required')}${field('Lũy kế tiền đã thanh toán seller','seller_paid',o.seller_paid,'number',false,'step="0.01" required')}${field('Tham chiếu bảng kê / chứng từ','reference',o.settlement_reference,'text',true,'required')}</div><p id="financeCalc" class="callout"></p><label style="display:flex;gap:10px;align-items:center"><input name="confirm" type="checkbox" style="width:auto" ${['RECONCILED','SETTLED'].includes(o.finance)?'checked':''}> Xác nhận số liệu đã đối soát khớp</label><p class="muted" style="font-size:11px">Chưa khớp có thể lưu để xử lý chênh lệch. Mỗi lần lưu đều ghi lịch sử.</p><div class="modalfoot"><button type="button" id="backDetail">Quay lại</button><button class="primary">Lưu đối soát</button></div></form>`);let calc=()=>{let d=formData('financeForm');let expected=(o.transport==='DELIVERED'?Number(o.cod):0)-Number(d.carrier_fee);$('financeCalc').textContent=`Hãng cần chuyển: ${money(expected,o.currency)} · Phải trả seller: ${money(expected-Number(d.service_fee),o.currency)} · Chênh lệch: ${money(Number(d.carrier_received)-expected,o.currency)}`};$('financeForm').oninput=calc;calc();$('backDetail').onclick=()=>openOrder(o.id);$('financeForm').onsubmit=e=>{e.preventDefault();run(async()=>{let d=formData('financeForm');d.confirm=d.confirm==='on';await post('/api/wf/orders/'+o.id+'/finance',{version:o.version,...d});await afterMutation(o.id,'Đã lưu đối soát.')},e.submitter)}}
+function stockForm(){if(!customers.length){notice('Cần thêm khách hàng trước.',true);return}openModal('Nhập / điều chỉnh tồn',`<form id="stockForm"><div class="field"><label>Khách hàng</label><select name="customer_id">${customerOptions()}</select></div><div class="fieldgrid">${field('SKU','sku','','text',false,'required')}${field('Số lượng thay đổi','quantity','','number',false,'step="1" required')}${area('Lý do / chứng từ','reason','','required minlength="3"')}</div><p class="muted">Số dương để nhập thêm, số âm để điều chỉnh giảm. Không được giảm phần hàng đã giữ cho đơn.</p><div class="modalfoot"><button class="primary">Xác nhận</button></div></form>`);$('stockForm').onsubmit=e=>{e.preventDefault();run(async()=>{let d=formData('stockForm');await post('/api/wf/stock',{...d,customer_id:Number(d.customer_id),quantity:Number(d.quantity)});$('modal').close();await render();notice('Đã cập nhật tồn kho.')},e.submitter)}}
+async function stockHistory(){let rows=await api('/api/wf/stock/history');openModal('Lịch sử nhập / xuất kho',`<div class="tablewrap"><table><thead><tr><th>Thời gian</th><th>Khách / SKU</th><th>Thay đổi</th><th>Lý do</th><th>Người ghi</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${date(x.at)}</td><td>${esc(x.customer)}<span class="sub mono">${esc(x.sku)}</span></td><td>${x.quantity>0?'+':''}${x.quantity}</td><td class="wrap">${esc(x.reason)}${x.order_id?' · Đơn #'+x.order_id:''}</td><td>${esc(x.actor)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">Chưa có phát sinh.</td></tr>'}</tbody></table></div>`)}
+function customerForm(){openModal('Thêm khách hàng',`<form id="customerForm">${field('Tên khách hàng','name','','text',false,'required')}${field('Mã chính · ví dụ HL','code','','text',false,'required')}<div class="modalfoot"><button class="primary">Tạo khách hàng</button></div></form>`);$('customerForm').onsubmit=e=>{e.preventDefault();run(async()=>{await post('/api/v1/customers',formData('customerForm'));$('modal').close();await refresh();await render();notice('Đã thêm khách hàng.')},e.submitter)}}
+function customerDetail(id){let c=customers.find(c=>c.id===id);openModal('Khách hàng · '+c.name,`<form id="customerEdit">${field('Tên khách hàng','name',c.name,'text',false,'required')}<p>Mã chính: <strong class="mono">${esc(c.code)}</strong></p><p>Bí danh: ${c.aliases.map(a=>`<span class="badge">${esc(a)}</span>`).join(' ')||'Chưa có'}</p>${can('admin','operator')?'<button class="primary">Lưu tên khách</button>':''}</form>${can('admin','operator')?'<div class="section"><h3>Thêm mã bí danh</h3><form class="pad inline" id="aliasForm"><input name="alias" placeholder="Ví dụ FG cũng thuộc khách này" required><button>Gắn mã</button></form></div>':''}<div class="section"><h3>Đơn của khách</h3>${orderTable(orders.filter(o=>o.customer_id===id))}</div>`);$('customerEdit').onsubmit=e=>{e.preventDefault();run(async()=>{await api('/api/wf/customers/'+id,{method:'PATCH',body:JSON.stringify(formData('customerEdit'))});await refresh();await render();customerDetail(id);notice('Đã cập nhật khách hàng.')},e.submitter)};if($('aliasForm'))$('aliasForm').onsubmit=e=>{e.preventDefault();run(async()=>{await post('/api/v1/customers/'+id+'/aliases',formData('aliasForm'));await refresh();await render();customerDetail(id)},e.submitter)};bindOrderRows()}
+async function previewFile(kind) {
+  const input = $(kind === 'orders' ? 'orderFile' : 'trackingFile');
+  const file = input.files[0];
+  if (!file) throw Error('Chọn file trước.');
+  preview = null;
+  if ($('previewArea')) $('previewArea').innerHTML = '';
+  if (file.size > 10 * 1024 * 1024) throw Error('File vượt quá 10 MB. Hãy chia nhỏ file rồi nhập lại.');
+  let bytes;
+  try {
+    bytes = await file.arrayBuffer();
+  } catch {
+    input.value = '';
+    throw Error('Không đọc được file đã chọn. Lưu và đóng file Excel, rồi chọn lại bản đã lưu trên máy.');
+  }
+  const fd = new FormData();
+  fd.append('file', new Blob([bytes], {type: file.type}), file.name);
+  preview=await api(kind==='orders'?'/api/wf/import/preview?source='+$('importSource').value+'&cod_format='+$('codFormat').value:'/api/wf/tracking/preview',{method:'POST',body:fd});
+  const pa = $('previewArea');
+  if (!pa) return;
+  pa.innerHTML=`<div class="panel"><div class="panelhead"><h3>Xem trước · ${preview.total} ${kind==='orders'?'đơn':'dòng'}</h3><span class="badge ${preview.errors?'red':'green'}">${preview.errors} lỗi cấu trúc</span></div><div class="preview"><table><thead><tr><th>Dòng</th><th>Mã</th><th>Nội dung</th><th>Kết quả</th></tr></thead><tbody>${preview.rows.map(r=>`<tr><td>${r.lines?.join(', ')||r.line}</td><td>${esc(r.code||r.tracking)}</td><td class="wrap">${r.data?esc(r.customer)+' · '+r.data.items.map(i=>esc(i.sku)+' × '+i.quantity).join(', ')+' · COD '+esc(r.data.cod)+' '+esc(r.data.currency)+(r.data.tracking?' · Vận đơn '+esc(r.data.tracking):''):esc(meta.tracking[r.status]||r.status)}</td><td class="wrap">${r.error?`<span class="badge red">Lỗi</span> ${esc(r.error)}`:r.exists?'<span class="badge orange">Đã có · bỏ qua</span>':'<span class="badge green">Sẵn sàng nhập</span>'}</td></tr>`).join('')}</tbody></table></div><div class="pad"><p class="muted">${kind==='orders'?'Đơn thiếu địa chỉ hoặc postcode được lưu vào Đơn lỗi để bổ sung. Các đơn đã tồn tại sẽ được bỏ qua, không ghi đè.':'Mọi dòng phải hợp lệ. Nếu đơn đã thay đổi sau khi xem trước, cần xem trước lại.'}</p><button class="primary" id="confirmImport" ${preview.errors||!preview.total?'disabled':''}>Xác nhận nhập ${preview.total} ${kind==='orders'?'đơn':'dòng'}</button></div></div>`;
+  if ($('confirmImport')) $('confirmImport').onclick=e=>run(async()=>{let result=await post('/api/wf/import/confirm',{preview_id:preview.preview_id});await refresh();await render();notice(`Đã tạo ${result.created} đơn; cập nhật ${result.updated}; bỏ qua ${result.skipped}.`)},e.target);
+}
+function passwordForm(){openModal('Đổi mật khẩu',`<form id="pwForm">${field('Mật khẩu hiện tại','old','','password',false,'required autocomplete="current-password"')}${field('Mật khẩu mới · ít nhất 12 ký tự','new','','password',false,'required minlength="12" autocomplete="new-password"')}<div class="modalfoot"><button class="primary">Lưu mật khẩu</button></div></form>`);$('pwForm').onsubmit=e=>{e.preventDefault();run(async()=>{await post('/api/wf/password',formData('pwForm'));$('modal').close();notice('Đã đổi mật khẩu.')},e.submitter)}}
+function userForm(){openModal('Tạo tài khoản nhân viên',`<form id="userForm">${field('Tài khoản · chữ, số, dấu chấm, gạch dưới','username','','text',false,'required minlength="3" autocomplete="off"')}${field('Mật khẩu · ít nhất 12 ký tự','password','','password',false,'required minlength="12" autocomplete="new-password"')}<div class="field"><label>Vai trò</label><select name="role">${Object.entries(meta.roles).map(([k,v])=>`<option value="${k}" ${k==='operator'?'selected':''}>${v}</option>`).join('')}</select></div><div class="modalfoot"><button class="primary">Tạo tài khoản</button></div></form>`);$('userForm').onsubmit=e=>{e.preventDefault();run(async()=>{await post('/api/wf/users',formData('userForm'));$('modal').close();await render();notice('Đã tạo tài khoản.')},e.submitter)}}
+
+function aiForm(o){openModal('Chuẩn hóa địa chỉ · '+o.code,`<p>Chỉ địa chỉ và quốc gia được gửi tới Gemini. Đề xuất sẽ hiển thị để bạn kiểm tra trước khi lưu.</p><div class="callout info">${esc(o.original_address||o.full_address||'Chưa có địa chỉ')}</div><button class="primary" id="callAddress">Tạo đề xuất địa chỉ</button><div id="addressPreview"></div>`);if($('callAddress'))$('callAddress').onclick=e=>run(async()=>{let d=await post('/api/wf/ai/preview',{order_ids:[o.id]});const ap=$('addressPreview');if(!ap)return;ap.innerHTML=`<div class="section"><h3>Đề xuất · ${esc(d.model)}</h3><div class="pad">${d.rows.map(r=>`<p><strong>Địa chỉ đầy đủ:</strong> ${esc(r.suggestion.full_address)}</p><p>Tỉnh/bang: ${esc(r.suggestion.province)} · Huyện/TP: ${esc(r.suggestion.district)} · Postcode: ${esc(r.suggestion.postcode)}</p><p class="muted">${esc(r.suggestion.note)}</p>`).join('')}<p class="muted">Tổng token: ${d.usage.totalTokenCount||0} · Cache: ${d.cached} địa chỉ</p><button class="primary" id="acceptAddress">Duyệt và lưu đề xuất</button></div></div>`;if($('acceptAddress'))$('acceptAddress').onclick=e=>run(async()=>{await post('/api/wf/ai/confirm',{preview_id:d.preview_id});await afterMutation(o.id,'Đã lưu địa chỉ được duyệt.')},e.target)},e.target)}
+
+function download(name,text){let url=URL.createObjectURL(new Blob(['\ufeff'+text],{type:'text/csv;charset=utf-8'}));let a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+async function start(u){user=u;meta=await api('/api/wf/meta');$('login').hidden=true;$('app').hidden=false;$('avatar').textContent=u.username.slice(0,1).toUpperCase();$('account').innerHTML=`<strong>${esc(u.username)}</strong><br><small class="muted">${esc(meta.roles[u.role])}</small>`;const hashView=location.hash.replace(/^#/,'');if(views[hashView]){view=hashView;}$('breadcrumb').textContent=views[view];await refresh();await render()}
+$('loginForm').onsubmit=e=>{e.preventDefault();$('loginError').textContent='';run(async()=>{try{let u=await post('/api/v1/auth/login',{username:$('username').value,password:$('password').value});$('password').value='';await start(u)}catch(e){$('loginError').textContent=e.message;throw e}},e.submitter)};
+$('logout').onclick=()=>run(async()=>{await post('/api/v1/auth/logout',{});location.reload()});
+api('/api/v1/auth/me').then(start).catch(()=>{});
+</script><script src="/management-ui.js"></script></body></html>

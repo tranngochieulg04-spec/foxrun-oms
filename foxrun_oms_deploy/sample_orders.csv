@@ -1,0 +1,3 @@
+code,customer,cod,currency,sku,quantity,recipient,phone,country,original_address,full_address,province,district,postcode,tracking
+FR-MY-000125,HL,150,MYR,MASK,2,Khach mau,0123456789,MY,"106 Kampung Banggol Peradong Manir 21200 Kuala Terengganu Terengganu","106 Kampung Banggol Peradong Manir 21200 Kuala Terengganu Terengganu",Terengganu,Kuala Terengganu,21200,
+FR-MY-000125,HL,150,MYR,SERUM,1,Khach mau,0123456789,MY,"106 Kampung Banggol Peradong Manir 21200 Kuala Terengganu Terengganu","106 Kampung Banggol Peradong Manir 21200 Kuala Terengganu Terengganu",Terengganu,Kuala Terengganu,21200,
