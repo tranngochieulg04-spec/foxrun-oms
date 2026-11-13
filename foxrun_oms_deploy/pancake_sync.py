@@ -974,8 +974,11 @@ def install(app, core, workflow):
     # 7. AI Address Normalization Bulk Endpoint with Pancake Two-Way Sync
     @app.post('/api/wf/ai/normalize-bulk')
     def ai_normalize_bulk(data: NormalizeBulkInput, db=Depends(get_db), user=Depends(current_user)):
-        order_ids = data.order_ids
+        import address_ai
+        if hasattr(address_ai, 'execute_normalize_bulk'):
+            return address_ai.execute_normalize_bulk(data.order_ids, db, user)
 
+        order_ids = data.order_ids
         normalized_results = []
         for oid in order_ids:
             o = db.get(Order, oid)
@@ -993,7 +996,6 @@ def install(app, core, workflow):
             # Push back to Pancake if order came from Pancake
             pancake_res = None
             if o.pancake_order_id and o.pancake_shop_id:
-                # Find matching CustomerSource with pancake_api_key
                 source = db.scalar(select(CustomerSource).where(
                     CustomerSource.pancake_shop_id == o.pancake_shop_id,
                     CustomerSource.is_active == 1

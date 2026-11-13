@@ -13,6 +13,7 @@ const baseRefresh = refresh;
 const baseNavigate = navigate;
 const baseOpenOrder = openOrder;
 const baseCustomerDetail = customerDetail;
+pageSize = Number(localStorage.getItem('foxrun_pageSize')) || 200;
 
 let tmState = { preview: null };
 let tfState = { preview: null };
@@ -497,10 +498,19 @@ orderTable = function (rows, selectable = false) {
       feeDisplay += '<span class="sub" style="color:#d46b08">+ Phụ phí: ' + money(order.special_fee, order.currency) + (order.special_fee_note ? ' (' + esc(order.special_fee_note) + ')' : '') + '</span>';
     }
 
+    let issueDisplay = '';
+    if (order.issue) {
+      if (order.issue.includes('Thiếu Tỉnh/Huyện')) {
+        issueDisplay = '<div style="margin-top:3px;"><span class="badge warn" style="background:#fffbe6;color:#d46b08;border:1px solid #ffe58f;font-weight:700;padding:2px 6px;border-radius:4px;display:inline-block;white-space:normal;line-height:1.3;" title="Thiếu Tỉnh/Thành phố hoặc Quận/Huyện — Cần kiểm tra lại với khách">⚠️ Thiếu Tỉnh/Huyện — Cần chuẩn hóa thủ công</span></div>';
+      } else {
+        issueDisplay = '<span class="sub" style="max-width:220px;white-space:normal;color:#b76d37;">' + esc(order.issue) + '</span>';
+      }
+    }
+
     return '<tr class="click" tabindex="0" data-order="' + order.id + '">' + selection +
       '<td class="code">' + esc(order.code) + '<span class="sub">' + esc(order.source) + ' · ' + date(order.created_at) + '</span>' + pancakeBadge + '</td>' +
       '<td>' + esc(order.customer) + '<span class="sub">' + esc(order.recipient || '') + '</span></td>' +
-      '<td>' + stageDisplay + (order.issue ? '<span class="sub">' + esc(order.issue) + '</span>' : '') + '</td>' +
+      '<td>' + stageDisplay + issueDisplay + '</td>' +
       '<td>' + badge(order.transport, 'transport') + '<span class="sub mono">' + esc(order.tracking || 'Chưa có vận đơn') + (order.stale ? ' · Quá 5 ngày' : '') + '</span>' + reconcileFlags + '</td>' +
       '<td>' + feeDisplay + '</td><td>' + badge(order.finance, 'finance') + '</td>' +
       '<td>' + date(order.completed_at) + '</td><td>' + order.items.map(item => esc(item.sku) + ' × ' + item.quantity).join(', ') + '</td></tr>';
@@ -539,13 +549,208 @@ bindOrderRows = function () {
   });
 };
 
+function openAiNormalizeReportModal(data) {
+  const usage = data.usage || {};
+  const promptTokens = (usage.prompt_tokens || 0).toLocaleString();
+  const outputTokens = (usage.candidates_tokens || 0).toLocaleString();
+  const totalTokens = (usage.total_tokens || 0).toLocaleString();
+  const modelName = esc(usage.model || 'Gemini');
+  const cachedCount = usage.cached || 0;
+
+  let skippedHtml = '';
+  if (data.skipped_orders && data.skipped_orders.length > 0) {
+    skippedHtml =
+      '<div style="margin-top:20px;">' +
+        '<h4 style="color:#d46b08;display:flex;align-items:center;gap:6px;margin:0 0 8px 0;font-size:14px;">' +
+          '<span>⚠️ Nhóm 1: Bỏ qua — Yêu cầu chuẩn hóa thủ công (' + data.skipped_orders.length + ' đơn)</span>' +
+          '<span style="font-size:12px;font-weight:normal;color:#8c8c8c;">(Địa chỉ gốc thiếu Tỉnh/Thành phố hoặc Quận/Huyện)</span>' +
+        '</h4>' +
+        '<div class="tablewrap" style="max-height:260px;overflow-y:auto;border:1px solid #ffe58f;border-radius:6px;">' +
+          '<table style="width:100%;font-size:12px;border-collapse:collapse;">' +
+            '<thead style="background:#fffbe6;position:sticky;top:0;">' +
+              '<tr>' +
+                '<th style="padding:8px;text-align:left;">Mã đơn</th>' +
+                '<th style="padding:8px;text-align:left;">Khách</th>' +
+                '<th style="padding:8px;text-align:left;">Địa chỉ gốc hiện tại</th>' +
+                '<th style="padding:8px;text-align:left;">Lý do chặn</th>' +
+                '<th style="padding:8px;text-align:center;">Thao tác</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody>' +
+              data.skipped_orders.map(o =>
+                '<tr style="border-bottom:1px solid #f0f0f0;">' +
+                  '<td style="padding:8px;font-weight:600;"><span class="mono">' + esc(o.code) + '</span></td>' +
+                  '<td style="padding:8px;">' + esc(o.customer || '—') + '</td>' +
+                  '<td style="padding:8px;max-width:320px;white-space:normal;color:#595959;">' + esc(o.original_address || '—') + '</td>' +
+                  '<td style="padding:8px;"><span class="badge warn" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;">' + esc(o.reason) + '</span></td>' +
+                  '<td style="padding:8px;text-align:center;">' +
+                    '<button type="button" class="small btn-open-manual-edit" data-edit-order="' + o.order_id + '" style="background:#e6f7ff;color:#1890ff;border:1px solid #91d5ff;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;">✏️ Sửa tay</button>' +
+                  '</td>' +
+                '</tr>'
+              ).join('') +
+            '</tbody>' +
+          '</table>' +
+        '</div>' +
+      '</div>';
+  }
+
+  let failedHtml = '';
+  if (data.failed_orders && data.failed_orders.length > 0) {
+    failedHtml =
+      '<div style="margin-top:20px;">' +
+        '<h4 style="color:#cf1322;margin:0 0 8px 0;font-size:14px;">' +
+          '❌ Nhóm 2: Lỗi gọi API / Không phân tích được (' + data.failed_orders.length + ' đơn)' +
+        '</h4>' +
+        '<div class="tablewrap" style="max-height:200px;overflow-y:auto;border:1px solid #ffa39e;border-radius:6px;">' +
+          '<table style="width:100%;font-size:12px;border-collapse:collapse;">' +
+            '<thead style="background:#fff1f0;position:sticky;top:0;">' +
+              '<tr>' +
+                '<th style="padding:8px;text-align:left;">Mã đơn</th>' +
+                '<th style="padding:8px;text-align:left;">Thông báo lỗi</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody>' +
+              data.failed_orders.map(f =>
+                '<tr style="border-bottom:1px solid #f0f0f0;">' +
+                  '<td style="padding:8px;font-weight:600;"><span class="mono">' + esc(f.code || f.order_id) + '</span></td>' +
+                  '<td style="padding:8px;color:#cf1322;">' + esc(f.error) + '</td>' +
+                '</tr>'
+              ).join('') +
+            '</tbody>' +
+          '</table>' +
+        '</div>' +
+      '</div>';
+  }
+
+  const specialFeeText = data.special_fee_count > 0 
+    ? '<div style="font-size:11px;color:#389e0d;font-weight:600;margin-top:2px;">(Đã phát hiện &amp; gán phụ phí vùng xa/du lịch cho <strong>' + data.special_fee_count + '</strong> đơn)</div>'
+    : '';
+
+  const modalBody =
+    '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">' +
+      '<!-- Cards Thống kê số lượng -->' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(170px, 1fr));gap:12px;margin-bottom:16px;">' +
+        '<div style="background:#f5f5f5;border:1px solid #d9d9d9;border-radius:8px;padding:12px;text-align:center;">' +
+          '<div style="font-size:12px;color:#8c8c8c;font-weight:500;">Tổng đơn đã chọn</div>' +
+          '<div style="font-size:24px;font-weight:700;color:#262626;margin-top:4px;">' + data.total_selected + '</div>' +
+        '</div>' +
+        '<div style="background:#f6ffed;border:1px solid #b7eb8f;border-radius:8px;padding:12px;text-align:center;">' +
+          '<div style="font-size:12px;color:#389e0d;font-weight:500;">Chuẩn hóa thành công</div>' +
+          '<div style="font-size:24px;font-weight:700;color:#52c41a;margin-top:4px;">' + data.succeeded_count + '</div>' +
+          specialFeeText +
+        '</div>' +
+        '<div style="background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;padding:12px;text-align:center;">' +
+          '<div style="font-size:12px;color:#d46b08;font-weight:500;">Cần làm thủ công</div>' +
+          '<div style="font-size:24px;font-weight:700;color:#fa8c16;margin-top:4px;">' + data.skipped_count + '</div>' +
+          '<div style="font-size:11px;color:#d46b08;">(Thiếu Tỉnh/Huyện)</div>' +
+        '</div>' +
+        '<div style="background:#fff1f0;border:1px solid #ffa39e;border-radius:8px;padding:12px;text-align:center;">' +
+          '<div style="font-size:12px;color:#cf1322;font-weight:500;">Lỗi AI / Không gọi được</div>' +
+          '<div style="font-size:24px;font-weight:700;color:#f5222d;margin-top:4px;">' + data.failed_count + '</div>' +
+        '</div>' +
+      '</div>' +
+
+      '<!-- Thống kê Token tiêu thụ -->' +
+      '<div style="background:#f9f0ff;border:1px solid #d3adf7;border-radius:8px;padding:12px 16px;margin-bottom:16px;">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">' +
+          '<div style="display:flex;align-items:center;gap:8px;">' +
+            '<span style="font-size:18px;">⚡</span>' +
+            '<div>' +
+              '<span style="font-weight:700;color:#722ed1;font-size:13px;">Thống kê Token tiêu thụ (Gemini API)</span>' +
+              '<span class="badge" style="background:#f0f5ff;color:#1890ff;border-color:#adc6ff;margin-left:8px;font-size:11px;">Mô hình: ' + modelName + '</span>' +
+            '</div>' +
+          '</div>' +
+          '<div style="font-size:12px;color:#595959;">' +
+            (cachedCount > 0 ? '<span style="background:#fff;padding:2px 8px;border-radius:4px;border:1px solid #d3adf7;color:#722ed1;margin-right:8px;">♻️ Cache tái sử dụng: ' + cachedCount + ' đơn</span>' : '') +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:24px;margin-top:10px;font-size:13px;flex-wrap:wrap;">' +
+          '<div><span style="color:#8c8c8c;">Prompt Tokens (đầu vào):</span> <strong style="color:#262626;">' + promptTokens + '</strong></div>' +
+          '<div><span style="color:#8c8c8c;">Candidates Tokens (đầu ra):</span> <strong style="color:#262626;">' + outputTokens + '</strong></div>' +
+          '<div><span style="color:#8c8c8c;">Tổng Token tiêu thụ:</span> <strong style="color:#722ed1;font-size:14px;">' + totalTokens + '</strong> tokens</div>' +
+        '</div>' +
+      '</div>' +
+
+      skippedHtml +
+      failedHtml +
+
+      '<div class="modalfoot" style="margin-top:20px;display:flex;justify-content:flex-end;gap:8px;">' +
+        '<button type="button" id="btnCloseAiReportModal" style="padding:6px 16px;border-radius:4px;border:1px solid #d9d9d9;background:#fff;cursor:pointer;">Đóng</button>' +
+        '<button type="button" class="primary" id="btnReloadTableAfterAi" style="padding:6px 16px;border-radius:4px;background:#1890ff;color:#fff;border:none;cursor:pointer;font-weight:600;">↻ Tải lại bảng đơn hàng</button>' +
+      '</div>' +
+    '</div>';
+
+  openModal('✨ Báo cáo Kết quả Chuẩn hóa Địa chỉ (AI)', modalBody);
+
+  if ($('btnCloseAiReportModal')) {
+    $('btnCloseAiReportModal').onclick = () => $('modal').close();
+  }
+  if ($('btnReloadTableAfterAi')) {
+    $('btnReloadTableAfterAi').onclick = async () => {
+      $('modal').close();
+      await refresh();
+      await render();
+    };
+  }
+
+  document.querySelectorAll('.btn-open-manual-edit').forEach(btn => {
+    btn.onclick = () => {
+      const orderId = Number(btn.dataset.editOrder);
+      if (orderId) {
+        $('modal').close();
+        openOrder(orderId);
+      }
+    };
+  });
+}
+
 drawList = function () {
   const listArea = $('listArea');
   if (!listArea) return;
   const filtered = orders.filter(order => inView(order, view) && match(order));
-  const maxPage = Math.max(1, Math.ceil(filtered.length / 50));
-  page = Math.min(page, maxPage);
-  const visible = filtered.slice((page - 1) * 50, page * 50);
+  const maxPage = Math.max(1, Math.ceil(filtered.length / pageSize));
+  page = Math.max(1, Math.min(page, maxPage));
+  const visible = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+  const startRecord = filtered.length === 0 ? 0 : (page - 1) * pageSize + 1;
+  const endRecord = Math.min(page * pageSize, filtered.length);
+
+  // Helper render page number buttons
+  const renderPaginationButtons = () => {
+    let pages = [];
+    if (maxPage <= 7) {
+      for (let i = 1; i <= maxPage; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (page > 3) pages.push('...');
+      const start = Math.max(2, page - 1);
+      const end = Math.min(maxPage - 1, page + 1);
+      for (let i = start; i <= end; i++) pages.push(i);
+      if (page < maxPage - 2) pages.push('...');
+      pages.push(maxPage);
+    }
+
+    return pages.map(p => {
+      if (p === '...') return '<span style="padding:4px 6px;color:#8c8c8c;font-size:12px;">...</span>';
+      const isActive = p === page;
+      return '<button type="button" class="small pagination-btn ' + (isActive ? 'active' : '') + '" data-goto-page="' + p + '" ' +
+        (isActive ? 'style="background:#1890ff;color:#fff;border-color:#1890ff;font-weight:700;min-width:32px;height:30px;border-radius:4px;cursor:default;"' : 'style="background:#fff;color:#262626;border:1px solid #d9d9d9;min-width:32px;height:30px;border-radius:4px;cursor:pointer;"') + '>' + p + '</button>';
+    }).join(' ');
+  };
+
+  const pageSizeOptions = [50, 100, 200, 500].map(s => 
+    '<option value="' + s + '" ' + (pageSize === s ? 'selected' : '') + '>' + s + ' đơn / trang</option>'
+  ).join('');
+
+  const paginationNavHtml = 
+    '<div class="actions" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' +
+      '<button type="button" class="small pagination-btn" id="firstPage" title="Về trang đầu (Trang 1)" ' + (page === 1 ? 'disabled style="opacity:0.4;cursor:not-allowed;"' : 'style="cursor:pointer;"') + '>[|&lt;]</button>' +
+      '<button type="button" class="small pagination-btn" id="prevPage" title="Trang trước" ' + (page === 1 ? 'disabled style="opacity:0.4;cursor:not-allowed;"' : 'style="cursor:pointer;"') + '>[&larr;]</button>' +
+      '<span style="margin:0 4px;font-weight:600;font-size:13px;color:#262626;">Trang ' + page + ' / ' + maxPage + '</span>' +
+      renderPaginationButtons() +
+      '<button type="button" class="small pagination-btn" id="nextPage" title="Trang sau" ' + (page === maxPage ? 'disabled style="opacity:0.4;cursor:not-allowed;"' : 'style="cursor:pointer;"') + '>[&rarr;]</button>' +
+      '<button type="button" class="small pagination-btn" id="lastPage" title="Đến trang cuối (Trang ' + maxPage + ')" ' + (page === maxPage ? 'disabled style="opacity:0.4;cursor:not-allowed;"' : 'style="cursor:pointer;"') + '>[&gt;|]</button>' +
+    '</div>';
 
   let extraToolbarButtons = '<button class="small" id="btnBulkAiNormalize" style="background:#f9f0ff;color:#722ed1;border:1px solid #d3adf7;font-weight:600">✨ Chuẩn hóa địa chỉ (AI)</button>';
   if (view === 'warehouse') {
@@ -555,14 +760,37 @@ drawList = function () {
     extraToolbarButtons += '<button class="primary small" id="btnUploadCodFile" style="background:#52c41a;border-color:#52c41a;color:#fff;font-weight:600">📤 Upload File trả COD Kho (.xlsx/.csv)</button>';
   }
 
+  const topPageSizeSelector = 
+    '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#595959;margin-left:auto;">' +
+      '<span>Hiển thị:</span>' +
+      '<select id="pageSizeSelectTop" style="padding:4px 8px;border-radius:4px;border:1px solid #d9d9d9;font-size:12px;background:#fff;cursor:pointer;font-weight:500;">' +
+        pageSizeOptions +
+      '</select>' +
+    '</label>';
+
+  const footerHtml = 
+    '<div class="tablefoot" style="padding:12px 20px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #f0f0f0;font-size:12px;color:#595959;background:#fafafa;flex-wrap:wrap;gap:12px;">' +
+      '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">' +
+        '<span>Hiển thị <strong>' + startRecord + '</strong> - <strong>' + endRecord + '</strong> trên tổng số <strong>' + filtered.length + '</strong> đơn</span>' +
+        '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#595959;">' +
+          '<span>Xem:</span>' +
+          '<select id="pageSizeSelect" style="padding:4px 8px;border-radius:4px;border:1px solid #d9d9d9;font-size:12px;background:#fff;cursor:pointer;font-weight:500;">' +
+            pageSizeOptions +
+          '</select>' +
+        '</label>' +
+      '</div>' +
+      paginationNavHtml +
+    '</div>';
+
   listArea.innerHTML =
     '<div class="toolbar"><span id="selectionCount"></span><button class="small" id="selectFiltered">Chọn toàn bộ kết quả lọc</button>' +
     '<button class="small" id="clearSelection">Bỏ chọn</button>' +
     extraToolbarButtons +
-    '<button class="primary small" id="bulkAction">Thao tác các đơn đã chọn</button></div>' +
+    '<button class="primary small" id="bulkAction">Thao tác các đơn đã chọn</button>' +
+    topPageSizeSelector + '</div>' +
     orderTable(visible, true) +
-    '<div class="tablefoot"><span>' + filtered.length + ' đơn</span><div class="actions"><button class="small" id="prevPage" ' + (page === 1 ? 'disabled' : '') + '>←</button>' +
-    page + ' / ' + maxPage + '<button class="small" id="nextPage" ' + (page === maxPage ? 'disabled' : '') + '>→</button></div></div>';
+    footerHtml;
+
   const updateSelection = () => {
     const sc = $('selectionCount');
     const ba = $('bulkAction');
@@ -611,18 +839,15 @@ drawList = function () {
         return;
       }
       run(async () => {
+        notice('Đang gửi ' + selected.length + ' đơn tới Gemini AI để chuẩn hóa địa chỉ và tính phụ phí...');
         try {
           const res = await post('/api/wf/ai/normalize-bulk', {order_ids: selected});
-          notice(res.message || `Đã chuẩn hóa địa chỉ AI thành công cho ${res.updated || selected.length} đơn.`);
-        } catch {
-          const prev = await post('/api/wf/ai/preview', {order_ids: selected});
-          if (prev && prev.preview_id) {
-            await post('/api/wf/ai/confirm', {preview_id: prev.preview_id});
-          }
-          notice(`Đã chuẩn hóa địa chỉ AI thành công cho ${selected.length} đơn.`);
+          openAiNormalizeReportModal(res);
+          await refresh();
+          await render();
+        } catch (err) {
+          notice(err.message || 'Lỗi khi gọi API chuẩn hóa địa chỉ AI. Vui lòng kiểm tra cấu hình API Key.', true);
         }
-        await refresh();
-        await render();
       });
     };
   }
@@ -654,8 +879,30 @@ drawList = function () {
     $('btnUploadCodFile').onclick = openUploadCodModal;
   }
 
-  if ($('prevPage')) $('prevPage').onclick = () => { page--; drawList(); };
-  if ($('nextPage')) $('nextPage').onclick = () => { page++; drawList(); };
+  const handlePageSizeChange = (e) => {
+    pageSize = Number(e.target.value);
+    localStorage.setItem('foxrun_pageSize', pageSize);
+    page = 1;
+    drawList();
+  };
+  if ($('pageSizeSelect')) $('pageSizeSelect').onchange = handlePageSizeChange;
+  if ($('pageSizeSelectTop')) $('pageSizeSelectTop').onchange = handlePageSizeChange;
+
+  if ($('firstPage')) $('firstPage').onclick = () => { page = 1; drawList(); };
+  if ($('prevPage')) $('prevPage').onclick = () => { if (page > 1) { page--; drawList(); } };
+  if ($('nextPage')) $('nextPage').onclick = () => { if (page < maxPage) { page++; drawList(); } };
+  if ($('lastPage')) $('lastPage').onclick = () => { page = maxPage; drawList(); };
+
+  document.querySelectorAll('[data-goto-page]').forEach(btn => {
+    btn.onclick = () => {
+      const targetPage = Number(btn.dataset.gotoPage);
+      if (targetPage && targetPage !== page) {
+        page = targetPage;
+        drawList();
+      }
+    };
+  });
+
   bindOrderRows();
   updateSelection();
 };
