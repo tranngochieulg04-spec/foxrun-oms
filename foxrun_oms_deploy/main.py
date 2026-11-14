@@ -9,17 +9,54 @@ from sqlalchemy import create_engine, Column, String, Integer, Numeric, ForeignK
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
 from pwdlib import PasswordHash
 from openpyxl import load_workbook
+from pathlib import Path
 
-DATABASE_URL = (os.getenv('DATABASE_URL') or os.environ.get('DATABASE_URL') or '').strip()
-if not DATABASE_URL:
-    DATABASE_URL = 'sqlite:///./data/foxrun.db'
+def resolve_database_url() -> str:
+    candidates = ["DATABASE_URL", "DATABASE_URI", "POSTGRES_URL", "POSTGRESQL_URL"]
+    url = ""
+    for k in candidates:
+        v = (os.getenv(k) or os.environ.get(k) or "").strip()
+        if v:
+            url = v
+            break
 
-if DATABASE_URL.startswith('postgres://'):
-    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+    if not url:
+        secret_files = [
+            Path("/etc/secrets/DATABASE_URL"),
+            Path("/etc/secrets/.env"),
+            Path(__file__).resolve().parent / ".env",
+            Path(__file__).resolve().parent / "data" / ".env",
+        ]
+        for sf in secret_files:
+            try:
+                if sf.is_file():
+                    content = sf.read_text(encoding="utf-8").strip()
+                    if sf.name == "DATABASE_URL" and content:
+                        url = content
+                        break
+                    for line in content.splitlines():
+                        line = line.strip()
+                        if line.startswith("DATABASE_URL="):
+                            url = line.split("=", 1)[1].strip()
+                            break
+                    if url:
+                        break
+            except Exception:
+                pass
 
-if 'sslmode=' not in DATABASE_URL and ('neon.tech' in DATABASE_URL or 'supabase' in DATABASE_URL):
-    separator = '&' if '?' in DATABASE_URL else '?'
-    DATABASE_URL = f"{DATABASE_URL}{separator}sslmode=require"
+    url = url.strip().strip("'\"").strip()
+    if url:
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        if "sslmode=" not in url and ("neon.tech" in url or "supabase" in url or "render" in url):
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}sslmode=require"
+        os.environ["DATABASE_URL"] = url
+    else:
+        url = 'sqlite:///./data/foxrun.db'
+    return url
+
+DATABASE_URL = resolve_database_url()
 
 if DATABASE_URL.startswith('sqlite'):
     engine = create_engine(
@@ -602,16 +639,20 @@ STATUS_TRANSLATIONS = {
 }
 
 def parse_tracking_file(name, content):
-    raw=read_rows(name,content)
-    normalized=[]
-    for line, original in enumerate(raw,2):
-        r={TRACKING_FILE_HEADERS.get(str(k).strip().lower(),str(k).strip().lower()):v for k,v in original.items()}
-        tracking=str(r.get('tracking') or '').strip()
-        raw_status=str(r.get('status') or '').strip()
-        status=STATUS_TRANSLATIONS.get(raw_status.upper())
-        normalized.append({'line':line,'tracking_number':tracking,'raw_status':raw_status,
-                           'status':status,'carrier':str(r.get('carrier') or 'other').strip(),
-                           'note':str(r.get('note') or '').strip()[:2000]})
+    import excel_io
+    parsed = excel_io.parse_tracking_excel_workbook(content, name)
+    normalized = []
+    for line, r in enumerate(parsed, 2):
+        tracking = str(r.get('tracking') or '').strip()
+        status = r.get('status') or ''
+        normalized.append({
+            'line': line,
+            'tracking_number': tracking,
+            'raw_status': status,
+            'status': status,
+            'carrier': str(r.get('carrier') or 'other').strip(),
+            'note': str(r.get('note') or '').strip()[:2000]
+        })
     return normalized
 
 @app.post('/api/v1/tracking/file/preview')
@@ -701,3 +742,5 @@ import address_ai as _address_ai
 _address_ai.install(app, _workflow)
 import pancake_sync as _pancake_sync
 _pancake_sync.install(app, _sys.modules[__name__], _workflow)
+import reconciliation_upgrade as _reconciliation_upgrade
+_reconciliation_upgrade.install(app)

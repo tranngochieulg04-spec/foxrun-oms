@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import secrets
+import excel_io
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -12,9 +13,9 @@ from urllib.parse import urlsplit
 import sqlite3
 
 from fastapi import Depends, HTTPException, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Column, Integer, String, Text, Numeric, DateTime, ForeignKey, UniqueConstraint, CheckConstraint, select, func, update
+from sqlalchemy import Column, Integer, String, Text, Numeric, DateTime, ForeignKey, UniqueConstraint, CheckConstraint, select, func, update, or_, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 
@@ -58,6 +59,7 @@ def install(app, core):
         assigned=Column(String(100),default='')
         issue=Column(Text,default='')
         return_received=Column(Integer,default=0,nullable=False)
+        stock_restored=Column(Integer,default=0,nullable=False)
         updated_at=Column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
         carrier_fee=Column(Numeric(18,2),default=0,nullable=False)
         service_fee=Column(Numeric(18,2),default=0,nullable=False)
@@ -65,6 +67,10 @@ def install(app, core):
         seller_paid=Column(Numeric(18,2),default=0,nullable=False)
         reconciled=Column(Integer,default=0,nullable=False)
         settlement_reference=Column(String(200),default='')
+        fee_adjusted=Column(Integer,default=0,nullable=False)
+        fee_adjust_reason=Column(Text,default='',nullable=False)
+        fee_adjusted_by=Column(String(100),default='',nullable=False)
+        fee_adjusted_at=Column(DateTime(timezone=True),nullable=True)
 
     class Stock(Base):
         __tablename__='workflow_stock'
@@ -110,6 +116,13 @@ def install(app, core):
         result=Column(Text)
 
     Base.metadata.create_all(engine)
+    try:
+        from sqlalchemy import text
+        with engine.connect() as _migration_conn:
+            _migration_conn.execute(text("ALTER TABLE workflow_orders ADD COLUMN stock_restored INTEGER DEFAULT 0"))
+            _migration_conn.commit()
+    except Exception:
+        pass
     globals().update(Flow=Flow,Stock=Stock,Reservation=Reservation,Ledger=Ledger,Preview=Preview,TrackingClaim=TrackingClaim)
 
     @app.middleware('http')
@@ -261,16 +274,12 @@ def install(app, core):
             carrier=data.carrier.strip() if data.carrier else (f.carrier or 'TEST')
             if not tracking or not carrier:raise HTTPException(422,'Cần mã vận đơn và hãng vận chuyển.')
             claim_tracking(o, tracking, db)
-            for r in db.scalars(select(Reservation).where(Reservation.order_id==oid,Reservation.state=='RESERVED').order_by(Reservation.stock_id)).all():
-                result=db.execute(update(Stock).where(Stock.id==r.stock_id,Stock.on_hand>=r.quantity,Stock.reserved>=r.quantity).values(on_hand=Stock.on_hand-r.quantity,reserved=Stock.reserved-r.quantity).execution_options(synchronize_session=False))
-                if result.rowcount!=1:raise HTTPException(409,'Tồn không khớp, cần kiểm tra trước khi bàn giao.')
-                r.state='SHIPPED';db.add(Ledger(stock_id=r.stock_id,order_id=oid,quantity=-r.quantity,reason='Bàn giao vận chuyển',actor=user.username))
+            deduct_order_stock_for_shipping(db, o, f, user.username)
             o.tracking=tracking;f.carrier=carrier;f.stage='SHIPPED'
             record_tracking(db,o,user,'IN_TRANSIT',data.note or 'Bàn giao vận chuyển','WAREHOUSE')
         elif act=='cancel':
             if f.stage in {'SHIPPED','CANCELLED'}:raise HTTPException(409,'Không thể hủy đơn đã bàn giao hoặc đã hủy.')
-            for r in db.scalars(select(Reservation).where(Reservation.order_id==oid,Reservation.state=='RESERVED').order_by(Reservation.stock_id)).all():
-                db.execute(update(Stock).where(Stock.id==r.stock_id).values(reserved=Stock.reserved-r.quantity).execution_options(synchronize_session=False));r.state='RELEASED'
+            release_order_stock_reservation(db, o, f, user.username, data.note)
             f.stage='CANCELLED';f.issue=data.note
         else:raise HTTPException(422,'Thao tác không hợp lệ.')
         touch(f);audit(db,user,'workflow.'+act,{'order_id':oid,'stage':f.stage,'note':data.note,'version':f.version})
@@ -302,7 +311,7 @@ def install(app, core):
                 if not s:s=Stock(customer_id=o.customer_id,sku=sku,on_hand=0,reserved=0);db.add(s);db.flush()
                 db.execute(update(Stock).where(Stock.id==s.id).values(on_hand=Stock.on_hand+line.good).execution_options(synchronize_session=False))
                 db.add(Ledger(stock_id=s.id,order_id=oid,quantity=line.good,reason='Nhận hàng hoàn đạt kiểm tra',actor=user.username))
-        f.return_received=1;touch(f)
+        f.return_received=1;f.stock_restored=1;touch(f)
         audit(db,user,'return.receive',{'order_id':oid,'lines':[x.model_dump() for x in data.lines],'note':data.note})
         db.commit();return serialize(db,o,f)
 
@@ -407,9 +416,11 @@ def install(app, core):
     async def preview_import(source:str='excel',cod_format:str='plain',file:UploadFile=File(...),db=Depends(get_db),user=Depends(current_user)):
         require(user,'admin','operator')
         if source not in {'excel','pancake'}:raise HTTPException(422,'Nguồn không hợp lệ.')
-        try:raw=read_rows(file.filename or '',await file.read(10*1024*1024+1))
+        try:
+            content = await file.read(10*1024*1024+1)
+            raw = excel_io.parse_orders_excel_workbook(content, file.filename or '')
         except HTTPException:raise
-        except Exception:raise HTTPException(422,'Không đọc được file. Dùng CSV UTF-8 hoặc XLSX hợp lệ.')
+        except Exception as e:raise HTTPException(422,f'Không đọc được file. Dùng CSV UTF-8 hoặc XLSX hợp lệ: {e}')
         if cod_format not in {'plain','vn'}:raise HTTPException(422,'Định dạng COD không hợp lệ.')
         rows=prepare_import(db,raw,source,cod_format)
         return save_preview(db,user,'orders',rows,file.filename or '')
@@ -417,12 +428,16 @@ def install(app, core):
     @app.post('/api/wf/tracking/preview')
     async def preview_tracking(file:UploadFile=File(...),db=Depends(get_db),user=Depends(current_user)):
         require(user,'admin','operator','warehouse')
-        try:raw=read_rows(file.filename or '',await file.read(10*1024*1024+1))
+        try:
+            content = await file.read(10*1024*1024+1)
+            raw = excel_io.parse_tracking_excel_workbook(content, file.filename or '')
         except HTTPException:raise
-        except Exception:raise HTTPException(422,'Không đọc được file tracking. Dùng CSV UTF-8 hoặc XLSX hợp lệ.')
+        except Exception as e:raise HTTPException(422,f'Không đọc được file tracking. Dùng CSV UTF-8 hoặc XLSX hợp lệ: {e}')
         rows=[];seen=set()
         for i,r in enumerate(raw,2):
-            code=str(r.get('tracking') or '').strip();status=TRACK_ALIASES.get(str(r.get('status') or r.get('trạng thái') or '').strip().upper(),'')
+            code=str(r.get('tracking') or '').strip()
+            raw_st=str(r.get('status') or r.get('trạng thái') or '').strip()
+            status=excel_io.THAI_STATUS_MAP.get(raw_st, excel_io.THAI_STATUS_MAP.get(raw_st.upper(), TRACK_ALIASES.get(raw_st.upper(), '')))
             found=db.scalars(select(Order).where(Order.tracking==code)).all() if code else []
             error=''
             if not code or not status:error='Thiếu vận đơn hoặc trạng thái không hợp lệ'
@@ -430,8 +445,11 @@ def install(app, core):
             elif len(found)!=1:error='Không tìm thấy hoặc vận đơn bị trùng'
             if not error:
                 o=found[0];f=db.get(Flow,o.id)
-                if effective_stage(o,f)!='SHIPPED':error='Đơn chưa bàn giao'
-                elif not tracking_allowed(o.status,status):error='Chuyển trạng thái không hợp lệ'
+                stage_val=effective_stage(o,f)
+                if stage_val not in ('SHIPPED', 'READY', 'HANDOVER'):
+                    error='Đơn chưa bàn giao'
+                elif not tracking_allowed(o.status,status):
+                    error='Chuyển trạng thái không hợp lệ'
                 rows.append({'line':i,'tracking':code,'status':status,'order_id':o.id,'version':f.version if f else 0,'previous':o.status,'error':error,'note':str(r.get('note') or '')[:2000]})
             else:rows.append({'line':i,'tracking':code,'status':status,'error':error})
             seen.add(code)
@@ -480,9 +498,22 @@ def install(app, core):
                         continue
                     result['skipped']+=1
                     continue
-                created_order,_=make_order(db,OrderInput(**row['data']).model_dump(),user)
+                created_order, flow = make_order(db, OrderInput(**row['data']).model_dump(), user)
                 if created_order.tracking:
                     claim_tracking(created_order, created_order.tracking, db)
+                if row['data'].get('status'):
+                    st = row['data']['status']
+                    if st in TRACKING and st != 'NOT_SHIPPED':
+                        created_order.status = st
+                        if st == 'DELIVERED':
+                            created_order.completed_at = datetime.now(timezone.utc)
+                            flow.stage = 'READY'
+                        elif st in ('RETURNED', 'RETURNED_COMPLETED'):
+                            created_order.returned_at = datetime.now(timezone.utc)
+                            flow.stage = 'READY'
+                        elif st in ('IN_TRANSIT', 'OUT_FOR_DELIVERY'):
+                            flow.stage = 'SHIPPED'
+                        db.add(TrackingEvent(order_id=created_order.id, tracking_number=created_order.tracking or '', previous_status='NOT_SHIPPED', new_status=st, note=str(row['data'].get('note') or 'Đồng bộ từ file nhập'), updated_by=user.id, source_type='FILE'))
                 audit(db,user,'import.order',{'order_id':created_order.id,'preview_id':p.id,'source_lines':row['lines']})
                 result['created']+=1
         else:
@@ -494,17 +525,126 @@ def install(app, core):
         p.result=json.dumps(result);audit(db,user,'import.confirm',{'kind':p.kind,'preview_id':p.id,**result});db.commit();return result
 
     @app.get('/api/wf/export')
-    def export(db=Depends(get_db),user=Depends(current_user)):
-        buff=io.StringIO();fields=['code','customer','tracking','cod','currency','stage','transport','finance','completed_at','returned_at','recipient','phone','full_address','province','district','postcode','country','sku','quantity']
-        writer=csv.DictWriter(buff,fieldnames=fields);writer.writeheader()
+    @app.get('/api/wf/export-xlsx')
+    @app.get('/api/wf/orders/export-xlsx')
+    def export_xlsx(request: Request, db=Depends(get_db),user=Depends(current_user)):
+        fields=['code','customer','tracking','cod','currency','stage','transport','finance','completed_at','returned_at','recipient','phone','full_address','province','district','postcode','country','sku','quantity']
+        
+        # Fallback CSV khi query param format=csv hoặc accept text/csv
+        if request.query_params.get('format') == 'csv' or request.headers.get('accept') == 'text/csv':
+            import csv as py_csv
+            out_buf = io.StringIO()
+            w_csv = py_csv.writer(out_buf)
+            w_csv.writerow(fields)
+            for o in db.scalars(select(Order).order_by(Order.id)).all():
+                if management.is_deleted(db, o.id): continue
+                row=serialize(db,o,db.get(Flow,o.id))
+                for item in row['items'] or [{'sku':'','quantity':''}]:
+                    out_row={k:row.get(k,'') for k in fields};out_row.update(item)
+                    row_vals=[]
+                    for k in fields:
+                        v=out_row.get(k,'')
+                        if isinstance(v, str) and v.startswith(('=', '+', '-', '@')):
+                            v = "'" + v
+                        row_vals.append(v)
+                    w_csv.writerow(row_vals)
+            return Response(content=out_buf.getvalue(), media_type='text/csv; charset=utf-8',
+                            headers={'Content-Disposition': 'attachment; filename="foxrun_orders.csv"'})
+
+        headers_vn=['Mã đơn','Khách hàng','Mã vận đơn','Tiền COD','Tiền tệ','Trạng thái xử lý','Trạng thái giao','Đối soát','Ngày giao','Ngày hoàn','Người nhận','Điện thoại','Địa chỉ chi tiết','Tỉnh / Bang','Quận / Huyện','Mã bưu cục (Postcode)','Thị trường','SKU sản phẩm','Số lượng']
+
+        rows_data = []
         for o in db.scalars(select(Order).order_by(Order.id)).all():
-            if management.is_deleted(db, o.id):continue
+            if management.is_deleted(db, o.id): continue
             row=serialize(db,o,db.get(Flow,o.id))
             for item in row['items'] or [{'sku':'','quantity':''}]:
                 out={k:row.get(k,'') for k in fields};out.update(item)
-                # Prevent spreadsheet formula execution in exported customer-supplied text.
-                writer.writerow({k:("'"+v if isinstance(v,str) and v.startswith(('=','+','-','@','\t','\r')) else v) for k,v in out.items()})
-        return StreamingResponse(iter(['\ufeff'+buff.getvalue()]),media_type='text/csv; charset=utf-8',headers={'Content-Disposition':'attachment; filename="foxrun_orders.csv"'})
+                row_vals=[]
+                for k in fields:
+                    v=out.get(k,'')
+                    if k in {'cod','quantity'} and v not in ('', None):
+                        try:
+                            v = float(v) if k == 'cod' else int(v)
+                        except (ValueError, TypeError):
+                            pass
+                    row_vals.append(v)
+                rows_data.append(row_vals)
+
+        buffer = excel_io.build_styled_workbook('Đơn hàng FOXRUN', headers_vn, rows_data, text_columns={1, 2, 3, 12, 16}, currency_columns={4}, number_columns={19})
+        return StreamingResponse(
+            buffer,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': 'attachment; filename="foxrun_orders.xlsx"'}
+        )
+
+    @app.get('/api/wf/stock/export')
+    @app.get('/api/wf/stock/export-xlsx')
+    def export_stock_xlsx_endpoint(db=Depends(get_db), user=Depends(current_user)):
+        require(user, 'admin', 'operator', 'warehouse')
+        stocks = []
+        for s in db.scalars(select(Stock).order_by(Stock.customer_id, Stock.sku)).all():
+            c = db.get(Customer, s.customer_id)
+            stocks.append({'customer': c.name if c else '', 'sku': s.sku, 'on_hand': s.on_hand, 'reserved': s.reserved, 'available': s.on_hand - s.reserved})
+        buffer = excel_io.export_stock_xlsx(stocks)
+        return StreamingResponse(
+            buffer,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': 'attachment; filename="foxrun_stock.xlsx"'}
+        )
+
+    @app.get('/api/wf/customers/export')
+    @app.get('/api/wf/customers/export-xlsx')
+    def export_customers_xlsx_endpoint(db=Depends(get_db), user=Depends(current_user)):
+        require(user, 'admin', 'operator')
+        custs = db.scalars(select(Customer).order_by(Customer.id)).all()
+        customers_data = []
+        for c in custs:
+            order_cnt = db.scalar(select(func.count(Order.id)).where(Order.customer_id == c.id)) or 0
+            customers_data.append({
+                'id': c.id,
+                'name': c.name,
+                'code': c.code,
+                'primary_code': c.primary_code or c.code,
+                'sku_keywords': c.sku_keywords or '',
+                'fixed_delivery_fee': c.fixed_delivery_fee or 0,
+                'fixed_return_fee': c.fixed_return_fee or 0,
+                'cod_fee_percent': c.cod_fee_percent or 0,
+                'order_count': order_cnt
+            })
+        buffer = excel_io.export_customers_xlsx(customers_data)
+        return StreamingResponse(
+            buffer,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': 'attachment; filename="foxrun_customers.xlsx"'}
+        )
+
+    @app.get('/api/wf/tracking/export')
+    @app.get('/api/wf/tracking/export-xlsx')
+    def export_tracking_xlsx_endpoint(db=Depends(get_db), user=Depends(current_user)):
+        require(user, 'admin', 'operator', 'warehouse')
+        records = []
+        for o in db.scalars(select(Order).where(Order.tracking != '').order_by(Order.id.desc())).all():
+            if management.is_deleted(db, o.id): continue
+            f = db.get(Flow, o.id)
+            c = db.get(Customer, o.customer_id)
+            records.append({
+                'code': o.code,
+                'tracking': o.tracking,
+                'customer': c.name if c else '',
+                'transport': TRACKING.get(o.status, o.status),
+                'stage': STAGES.get(f.stage, f.stage) if f else '',
+                'recipient': f.recipient if f else '',
+                'phone': f.phone if f else '',
+                'province': f.province if f else '',
+                'note': f.note if f else '',
+                'updated_at': o.completed_at.strftime('%Y-%m-%d %H:%M') if o.completed_at else ''
+            })
+        buffer = excel_io.export_tracking_xlsx(records)
+        return StreamingResponse(
+            buffer,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': 'attachment; filename="foxrun_tracking_report.xlsx"'}
+        )
 
     @app.get('/api/wf/sample/orders.xlsx')
     def sample_orders_xlsx():
@@ -522,73 +662,29 @@ def install(app, core):
             raise HTTPException(404, 'File mẫu không tìm thấy.')
         return FileResponse(path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename='foxrun_tracking_sample.xlsx')
 
-    @app.get('/api/wf/export-xlsx')
-    @app.get('/api/wf/orders/export-xlsx')
-    def export_xlsx(db=Depends(get_db),user=Depends(current_user)):
-        import openpyxl
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
+    @app.get('/api/wf/sample/stock.xlsx')
+    def sample_stock_xlsx():
+        from fastapi.responses import FileResponse
+        path = os.path.join(os.path.dirname(__file__), 'foxrun_stock_sample.xlsx')
+        if not os.path.exists(path):
+            raise HTTPException(404, 'File mẫu không tìm thấy.')
+        return FileResponse(path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename='foxrun_stock_sample.xlsx')
 
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Đơn hàng FOXRUN"
+    @app.get('/api/wf/sample/cod.xlsx')
+    def sample_cod_xlsx():
+        from fastapi.responses import FileResponse
+        path = os.path.join(os.path.dirname(__file__), 'foxrun_cod_sample.xlsx')
+        if not os.path.exists(path):
+            raise HTTPException(404, 'File mẫu không tìm thấy.')
+        return FileResponse(path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename='foxrun_cod_sample.xlsx')
 
-        fields=['code','customer','tracking','cod','currency','stage','transport','finance','completed_at','returned_at','recipient','phone','full_address','province','district','postcode','country','sku','quantity']
-        headers_vn=['Mã đơn','Khách hàng','Mã vận đơn','Tiền COD','Tiền tệ','Trạng thái xử lý','Trạng thái giao','Đối soát','Ngày giao','Ngày hoàn','Người nhận','Điện thoại','Địa chỉ chi tiết','Tỉnh / Bang','Quận / Huyện','Mã bưu cục (Postcode)','Thị trường','SKU sản phẩm','Số lượng']
-
-        ws.append(headers_vn)
-        header_fill = PatternFill(start_color='001529', end_color='001529', fill_type='solid')
-        header_font = Font(name='Segoe UI', size=11, bold=True, color='FFFFFF')
-        data_font = Font(name='Segoe UI', size=10)
-        thin_border = Border(
-            left=Side(style='thin', color='D9D9D9'),
-            right=Side(style='thin', color='D9D9D9'),
-            top=Side(style='thin', color='D9D9D9'),
-            bottom=Side(style='thin', color='D9D9D9')
-        )
-
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-
-        for o in db.scalars(select(Order).order_by(Order.id)).all():
-            if management.is_deleted(db, o.id): continue
-            row=serialize(db,o,db.get(Flow,o.id))
-            for item in row['items'] or [{'sku':'','quantity':''}]:
-                out={k:row.get(k,'') for k in fields};out.update(item)
-                row_vals=[]
-                for k in fields:
-                    v=out.get(k,'')
-                    if k in {'cod','quantity'} and v not in ('', None):
-                        try:
-                            v = float(v) if k == 'cod' else int(v)
-                        except (ValueError, TypeError):
-                            pass
-                    elif isinstance(v,str) and v.startswith(('=','+','-','@','\t','\r')):
-                        v="'"+v
-                    row_vals.append(v)
-                ws.append(row_vals)
-
-        for row in ws.iter_rows(min_row=2, min_col=1, max_col=len(fields)):
-            for cell in row:
-                cell.font = data_font
-                cell.border = thin_border
-                cell.alignment = Alignment(vertical='center')
-
-        for col in ws.columns:
-            max_len = max(len(str(cell.value or '')) for cell in col)
-            col_letter = get_column_letter(col[0].column)
-            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 40)
-
-        buffer = io.BytesIO()
-        wb.save(buffer)
-        buffer.seek(0)
-        return StreamingResponse(
-            buffer,
-            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            headers={'Content-Disposition': 'attachment; filename="foxrun_orders.xlsx"'}
-        )
+    @app.get('/api/wf/sample/master.xlsx')
+    def sample_master_xlsx():
+        from fastapi.responses import FileResponse
+        path = os.path.join(os.path.dirname(__file__), 'foxrun_all_in_one_master.xlsx')
+        if not os.path.exists(path):
+            raise HTTPException(404, 'File mẫu không tìm thấy.')
+        return FileResponse(path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename='foxrun_all_in_one_master.xlsx')
 
     # Put role validation on the inherited customer endpoints as well.
     @app.middleware('http')
@@ -627,11 +723,11 @@ def install(app, core):
 
 
 STAGES={'REVIEW':'Chờ duyệt','ERROR':'Đơn lỗi','WAIT_STOCK':'Chờ hàng','PICKING':'Chờ lấy hàng','PACKING':'Chờ đóng gói','READY':'Chờ bàn giao','SHIPPED':'Đã bàn giao','CANCELLED':'Đã hủy'}
-TRACKING={'NOT_SHIPPED':'Chưa gửi','IN_TRANSIT':'Đang vận chuyển','OUT_FOR_DELIVERY':'Đang giao','DELIVERY_FAILED':'Giao thất bại','DELIVERED':'Đã giao','RETURNING':'Đang hoàn','RETURNED':'Đã hoàn','EXCEPTION':'Bất thường','UNKNOWN':'Chưa rõ'}
+TRACKING={'NOT_SHIPPED':'Chưa gửi','IN_TRANSIT':'Đang vận chuyển','OUT_FOR_DELIVERY':'Đang giao','DELIVERY_FAILED':'Giao thất bại','DELIVERED':'Đã giao','RETURNING':'Đang hoàn','RETURNED':'Đã hoàn','RETURNED_COMPLETED':'Hoàn thành công','EXCEPTION':'Bất thường','UNKNOWN':'Chưa rõ'}
 ROLES={'admin':'Quản trị','operator':'Đơn hàng','warehouse':'Kho','finance':'Đối soát','viewer':'Chỉ xem'}
 ADDRESS_FIELDS=['recipient','phone','country','original_address','full_address','province','district','postcode']
-TRANSITIONS={'NOT_SHIPPED':{'IN_TRANSIT'},'IN_TRANSIT':set(TRACKING)-{'NOT_SHIPPED','UNKNOWN'},'OUT_FOR_DELIVERY':{'OUT_FOR_DELIVERY','IN_TRANSIT','DELIVERED','DELIVERY_FAILED','RETURNING','EXCEPTION'},'DELIVERY_FAILED':{'DELIVERY_FAILED','IN_TRANSIT','OUT_FOR_DELIVERY','DELIVERED','RETURNING','EXCEPTION'},'EXCEPTION':set(TRACKING)-{'NOT_SHIPPED','UNKNOWN'},'UNKNOWN':set(TRACKING)-{'NOT_SHIPPED'},'DELIVERED':{'DELIVERED','RETURNING'},'RETURNING':{'RETURNING','RETURNED','EXCEPTION'},'RETURNED':{'RETURNED'}}
-TRACK_ALIASES={**{k:k for k in TRACKING},**{v.upper():k for k,v in TRACKING.items()},'IN TRANSIT':'IN_TRANSIT','OUT FOR DELIVERY':'OUT_FOR_DELIVERY','DELIVERY FAILED':'DELIVERY_FAILED','GIAO THÀNH CÔNG':'DELIVERED','HOAN THANH':'DELIVERED','HOAN HANG':'RETURNED'}
+TRANSITIONS={'NOT_SHIPPED':{'IN_TRANSIT'},'IN_TRANSIT':set(TRACKING)-{'NOT_SHIPPED','UNKNOWN'},'OUT_FOR_DELIVERY':{'OUT_FOR_DELIVERY','IN_TRANSIT','DELIVERED','DELIVERY_FAILED','RETURNING','EXCEPTION'},'DELIVERY_FAILED':{'DELIVERY_FAILED','IN_TRANSIT','OUT_FOR_DELIVERY','DELIVERED','RETURNING','EXCEPTION'},'EXCEPTION':set(TRACKING)-{'NOT_SHIPPED','UNKNOWN'},'UNKNOWN':set(TRACKING)-{'NOT_SHIPPED'},'DELIVERED':{'DELIVERED','RETURNING'},'RETURNING':{'RETURNING','RETURNED','RETURNED_COMPLETED','EXCEPTION'},'RETURNED':{'RETURNED','RETURNED_COMPLETED'},'RETURNED_COMPLETED':{'RETURNED_COMPLETED'}}
+TRACK_ALIASES={**{k:k for k in TRACKING},**{v.upper():k for k,v in TRACKING.items()},'IN TRANSIT':'IN_TRANSIT','OUT FOR DELIVERY':'OUT_FOR_DELIVERY','DELIVERY FAILED':'DELIVERY_FAILED','GIAO THÀNH CÔNG':'DELIVERED','HOAN THANH':'DELIVERED','HOAN HANG':'RETURNED','HOÀN HÀNG':'RETURNED','RETURNED_COMPLETED':'RETURNED_COMPLETED','HOÀN THÀNH CÔNG':'RETURNED_COMPLETED','HOAN THANH CONG':'RETURNED_COMPLETED','HOÀN VỀ KHO':'RETURNED_COMPLETED','HOAN VE KHO':'RETURNED_COMPLETED'}
 
 class LineInput(BaseModel):
     sku:str=Field(min_length=1,max_length=120)
@@ -824,6 +920,128 @@ def record_tracking(db,o,user,status,note,source='MANUAL'):
     previous=o.status;o.status=status
     db.add(TrackingEvent(order_id=o.id,tracking_number=o.tracking or '',previous_status=previous,new_status=status,note=note,updated_by=user.id,source_type=source))
 def tracking_allowed(old,new):return new in TRANSITIONS.get(old,{'IN_TRANSIT'})
+
+def deduct_order_stock_for_shipping(db, order, flow, actor='system'):
+    """
+    3. Bàn giao / Xuất kho vận chuyển:
+    Giảm Đã giữ (reserved) đi quantity và giảm Tồn vật lý (on_hand) đi quantity.
+    Ghi sổ cái Ledger: 'Bàn giao vận chuyển - Mã đơn [code]'.
+    """
+    reservations = db.scalars(
+        select(Reservation).where(Reservation.order_id == order.id, Reservation.state == 'RESERVED').order_by(Reservation.stock_id)
+    ).all()
+    if reservations:
+        for r in reservations:
+            result = db.execute(
+                update(Stock)
+                .where(Stock.id == r.stock_id, Stock.on_hand >= r.quantity, Stock.reserved >= r.quantity)
+                .values(on_hand=Stock.on_hand - r.quantity, reserved=Stock.reserved - r.quantity)
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                s = db.get(Stock, r.stock_id)
+                if s:
+                    s.on_hand = max(0, s.on_hand - r.quantity)
+                    s.reserved = max(0, s.reserved - r.quantity)
+            r.state = 'SHIPPED'
+            db.add(Ledger(
+                stock_id=r.stock_id,
+                order_id=order.id,
+                quantity=-r.quantity,
+                reason=f'Bàn giao vận chuyển - Mã đơn {order.code}',
+                actor=actor
+            ))
+    else:
+        for sku, qty in sorted(quantities(order).items()):
+            if qty <= 0:
+                continue
+            s = db.scalar(select(Stock).where(Stock.customer_id == order.customer_id, Stock.sku == sku).with_for_update())
+            if not s:
+                s = Stock(customer_id=order.customer_id, sku=sku, on_hand=0, reserved=0)
+                db.add(s)
+                db.flush()
+            s.on_hand = max(0, s.on_hand - qty)
+            db.add(Ledger(
+                stock_id=s.id,
+                order_id=order.id,
+                quantity=-qty,
+                reason=f'Bàn giao vận chuyển - Mã đơn {order.code}',
+                actor=actor
+            ))
+
+
+def release_order_stock_reservation(db, order, flow, actor='system', note=''):
+    """
+    4. Hủy đơn trước khi bàn giao (đang ở trạng thái đã giữ tồn):
+    Giảm Đã giữ (reserved) đi quantity để trả lại Khả dụng (on_hand giữ nguyên).
+    """
+    reservations = db.scalars(
+        select(Reservation).where(Reservation.order_id == order.id, Reservation.state == 'RESERVED').order_by(Reservation.stock_id)
+    ).all()
+    for r in reservations:
+        db.execute(
+            update(Stock).where(Stock.id == r.stock_id)
+            .values(reserved=Stock.reserved - r.quantity)
+            .execution_options(synchronize_session=False)
+        )
+        r.state = 'RELEASED'
+
+
+def restore_order_stock_on_return(db, order, flow, actor='system', reason=None):
+    """
+    5. Hoàn hàng thành công (khi đơn chuyển sang Hoàn thành công / RETURNED_COMPLETED):
+    Tự động cộng lại quantity vào Tồn vật lý (giúp Khả dụng tăng lại tương ứng),
+    ghi rõ bản ghi vào Lịch sử nhập / xuất với lý do 'Hoàn hàng thành công - Mã đơn [code]',
+    và gắn cờ chống cộng trùng (stock_restored = 1) để dù cập nhật trạng thái nhiều lần cũng chỉ cộng lại tồn kho đúng 1 lần duy nhất.
+    """
+    if getattr(flow, 'stock_restored', 0) == 1:
+        return False
+
+    existing = db.scalar(
+        select(Ledger.id).where(
+            Ledger.order_id == order.id,
+            Ledger.quantity > 0,
+            or_(
+                Ledger.reason.like('%Hoàn hàng%'),
+                Ledger.reason.like('%hàng hoàn%'),
+                Ledger.reason.like('%RETURNED%')
+            )
+        ).limit(1)
+    )
+    if existing:
+        flow.stock_restored = 1
+        flow.return_received = 1
+        return False
+
+    item_map = quantities(order)
+    for sku, qty in sorted(item_map.items()):
+        if qty <= 0:
+            continue
+        s = db.scalar(select(Stock).where(Stock.customer_id == order.customer_id, Stock.sku == sku).with_for_update())
+        if not s:
+            s = Stock(customer_id=order.customer_id, sku=sku, on_hand=0, reserved=0)
+            db.add(s)
+            db.flush()
+        db.execute(
+            update(Stock)
+            .where(Stock.id == s.id)
+            .values(on_hand=Stock.on_hand + qty)
+            .execution_options(synchronize_session=False)
+        )
+        ledger_reason = reason or f'Hoàn hàng thành công - Mã đơn {order.code}'
+        db.add(Ledger(
+            stock_id=s.id,
+            order_id=order.id,
+            quantity=qty,
+            reason=ledger_reason,
+            actor=actor
+        ))
+
+    flow.stock_restored = 1
+    flow.return_received = 1
+    touch(flow)
+    return True
+
 def set_tracking(db,o,f,user,status,note,source='MANUAL'):
     if f.stage!='SHIPPED':raise HTTPException(409,'Đơn chưa được bàn giao vận chuyển.')
     if status not in TRACKING or not tracking_allowed(o.status,status):raise HTTPException(409,'Chuyển trạng thái không hợp lệ. Đơn đã hoàn không thể đổi sang đã giao.')
@@ -831,6 +1049,9 @@ def set_tracking(db,o,f,user,status,note,source='MANUAL'):
     if o.status!=status:
         record_tracking(db,o,user,status,note,source);touch(f)
         audit(db,user,'tracking.update',{'order_id':o.id,'status':status,'note':note})
+        if status in {'RETURNED_COMPLETED'}:
+            act_name = user.username if hasattr(user, 'username') else str(user)
+            restore_order_stock_on_return(db, o, f, actor=act_name)
 
 
 def serialize(db,o,f):
@@ -861,7 +1082,7 @@ def serialize(db,o,f):
     if status == 'DELIVERED':
         total_fee = fixed_del + spec_fee + cod_fee
         net_seller = cod_amt - total_fee
-    elif status == 'RETURNED':
+    elif status in {'RETURNED', 'RETURNED_COMPLETED'}:
         total_fee = fixed_ret + spec_fee
         net_seller = -total_fee
     else:
@@ -883,6 +1104,10 @@ def serialize(db,o,f):
         'pancake_order_id': getattr(o, 'pancake_order_id', '') or '',
         'pancake_shop_id': getattr(o, 'pancake_shop_id', '') or '',
         'pancake_sync_status': getattr(o, 'pancake_sync_status', '') or '',
+        'fee_adjusted': bool(getattr(f, 'fee_adjusted', 0)),
+        'fee_adjust_reason': getattr(f, 'fee_adjust_reason', '') or '',
+        'fee_adjusted_by': getattr(f, 'fee_adjusted_by', '') or '',
+        'fee_adjusted_at': getattr(f, 'fee_adjusted_at', None).isoformat() if getattr(f, 'fee_adjusted_at', None) else '',
     }
 
     return {**management.order_extras(db,o),'id':o.id,'code':o.code,'source':o.source,'customer_id':o.customer_id,'customer':o.customer.name,'tracking':o.tracking or '', 'cod':str(o.cod),'currency':o.currency,'stage':stage,'transport':status,'version':f.version if f else 0,'created_at':o.created_at,'updated_at':f.updated_at if f else o.created_at,'stale':stale,'tracking_at':at,'return_received':bool(f.return_received) if f else False,'items':[{'sku':sku,'quantity':qty} for sku,qty in quantities(o).items()],'finance':finance,**vals,**{k:str(v) for k,v in fees.items()},'carrier_expected':str(expected),'carrier_difference':str(fees['carrier_received']-expected),'seller_due':str(due),'seller_balance':str(due-fees['seller_paid']),**wf34_data}
@@ -891,7 +1116,7 @@ def match_term(term,row):
     if term.startswith('#'):return row['code'].lower().split('-')[-1]==term[1:] or row['tracking'].lower().split('-')[-1]==term[1:]
     return any(term in str(row[k]).lower() for k in ['code','tracking','customer','recipient','phone'])
 def in_view(r,view):
-    return {'review':r['stage']=='REVIEW','errors':r['stage']=='ERROR','warehouse':r['stage'] in {'PICKING','PACKING','READY','WAIT_STOCK'},'shipping':r['stage']=='SHIPPED' and r['transport'] not in {'DELIVERED','RETURNED'},'exceptions':r['stale'] or r['transport'] in {'DELIVERY_FAILED','EXCEPTION'},'returns':r['transport'] in {'RETURNING','RETURNED'},'finance':r['transport'] in {'DELIVERED','RETURNED'} and r['finance']!='SETTLED'}.get(view,False)
+    return {'review':r['stage']=='REVIEW','errors':r['stage']=='ERROR','warehouse':r['stage'] in {'PICKING','PACKING','READY','WAIT_STOCK'},'shipping':r['stage']=='SHIPPED' and r['transport'] not in {'DELIVERED','RETURNED','RETURNED_COMPLETED'},'exceptions':r['stale'] or r['transport'] in {'DELIVERY_FAILED','EXCEPTION'},'returns':r['transport'] in {'RETURNING','RETURNED','RETURNED_COMPLETED'},'finance':r['transport'] in {'DELIVERED','RETURNED','RETURNED_COMPLETED'} and r['finance']!='SETTLED'}.get(view,False)
 
 def save_preview(db,user,kind,rows,filename=''):
     p=Preview(id=secrets.token_hex(24),user_id=user.id,kind=kind,payload=json.dumps(rows,ensure_ascii=False,default=str))
@@ -903,10 +1128,18 @@ def save_preview(db,user,kind,rows,filename=''):
     return {'preview_id':p.id,'kind':kind,'total':len(rows),'errors':sum(bool(r.get('error')) for r in rows),'rows':rows}
 
 def prepare_import(db,raw,source,cod_format='plain'):
-    mappings={'người nhận':'recipient','tên người nhận':'recipient','sđt':'phone','số điện thoại':'phone','địa chỉ':'original_address','address':'original_address','địa chỉ chi tiết':'full_address','tỉnh/bang':'province','huyện/thành phố':'district','quốc gia':'country','postcode':'postcode','mã đơn hàng':'code','mã khách':'customer','mã sản phẩm':'sku','tiền thu hộ':'cod','trạng thái':'status','status':'status','ngày hoàn thành':'completed_at','completed_at':'completed_at','phí đặc biệt':'special_fee','special_fee':'special_fee','ghi chú phí':'special_fee_note','special_fee_note':'special_fee_note'}
+    mappings={
+        'người nhận':'recipient','tên người nhận':'recipient','sđt':'phone','số điện thoại':'phone',
+        'địa chỉ':'original_address','address':'original_address','địa chỉ chi tiết':'full_address',
+        'tỉnh/bang':'province','huyện/thành phố':'district','quốc gia':'country','postcode':'postcode',
+        'mã đơn hàng':'code','mã đơn':'code','mã khách':'customer','mã sản phẩm':'sku','tiền thu hộ':'cod',
+        'trạng thái':'status','status':'status','ngày hoàn thành':'completed_at','completed_at':'completed_at',
+        'phí đặc biệt':'special_fee','special_fee':'special_fee','ghi chú phí':'special_fee_note','special_fee_note':'special_fee_note',
+        'mã vận đơn':'tracking','ma van don':'tracking','tracking':'tracking','tracking_number':'tracking','waybill':'tracking','เลขพัสดุ':'tracking'
+    }
     grouped={};results=[]
     for line,row in enumerate(raw,2):
-        r={mappings.get(k,k):str(v).strip() if v is not None else '' for k,v in row.items()}
+        r={mappings.get(str(k or '').strip().lower(), str(k or '').strip()):str(v).strip() if v is not None else '' for k,v in row.items()}
         code=r.get('code','');customer_code=r.get('customer','').upper()
         c=None
         if customer_code:

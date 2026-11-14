@@ -5,7 +5,7 @@ import json
 from datetime import date, datetime, time, timezone, timedelta
 from decimal import Decimal
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, select, update
@@ -122,6 +122,8 @@ def install(app, workflow, action_handler, claim_handler):
                 elif data.action == 'handover':
                     w.require(user, 'admin', 'operator', 'warehouse')
                     order, flow = w.lock_order(db, selected.id, selected.version)
+                    if flow.stage != 'SHIPPED':
+                        w.deduct_order_stock_for_shipping(db, order, flow, user.username)
                     flow.stage = 'SHIPPED'
                     if data.carrier:
                         flow.carrier = data.carrier
@@ -433,25 +435,8 @@ def install(app, workflow, action_handler, claim_handler):
         return {'ok': True}
 
     @app.get('/api/wf/periods/{pid}/export')
-    def export_period(pid: int, db=Depends(w.get_db), user=Depends(w.current_user)):
-        period = db.get(Period, pid)
-        if not period:
-            raise HTTPException(404, 'Không tìm thấy đợt đối soát.')
-        result = period_result(db, period, include_rows=True)
-        columns = ['code', 'customer', 'tracking', 'completed_at', 'returned_at', 'currency', 'cod',
-                   'carrier_fee', 'service_fee', 'carrier_received', 'seller_paid', 'seller_balance']
-        buffer = io.StringIO()
-        writer = csv.DictWriter(buffer, fieldnames=columns)
-        writer.writeheader()
-        for row in result['orders']:
-            values = {key: row.get(key, '') for key in columns}
-            writer.writerow({key: "'" + str(value) if str(value).startswith(('=', '+', '-', '@')) else value
-                             for key, value in values.items()})
-        return StreamingResponse(iter(['\ufeff'+buffer.getvalue()]), media_type='text/csv; charset=utf-8',
-                                 headers={'Content-Disposition': 'attachment; filename="foxrun_period_'+str(pid)+'.csv"'})
-
     @app.get('/api/wf/periods/{pid}/export-xlsx')
-    def export_period_xlsx(pid: int, db=Depends(w.get_db), user=Depends(w.current_user)):
+    def export_period_xlsx(pid: int, request: Request, db=Depends(w.get_db), user=Depends(w.current_user)):
         import openpyxl
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
         from openpyxl.utils import get_column_letter
@@ -462,6 +447,23 @@ def install(app, workflow, action_handler, claim_handler):
         result = period_result(db, period, include_rows=True)
         columns = ['code', 'customer', 'tracking', 'completed_at', 'returned_at', 'currency', 'cod',
                    'carrier_fee', 'service_fee', 'carrier_received', 'seller_paid', 'seller_balance']
+
+        # Fallback CSV nếu gọi endpoint /export nguyên bản hoặc yêu cầu format=csv
+        if request.url.path.endswith('/export') and request.query_params.get('format') != 'xlsx':
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(columns)
+            for row in result['orders']:
+                row_vals = []
+                for k in columns:
+                    v = row.get(k, '')
+                    if isinstance(v, str) and v.startswith(('=', '+', '-', '@')):
+                        v = "'" + v
+                    row_vals.append(v)
+                writer.writerow(row_vals)
+            return Response(content=output.getvalue(), media_type='text/csv; charset=utf-8',
+                            headers={'Content-Disposition': f'attachment; filename="foxrun_period_{pid}.csv"'})
+
         headers_vn = ['Mã đơn', 'Khách hàng', 'Mã vận đơn', 'Ngày giao', 'Ngày hoàn', 'Tiền tệ', 'Tiền COD',
                       'Phí vận chuyển', 'Phí dịch vụ FOXRUN', 'Hãng thực chuyển', 'Đã trả Seller', 'Số dư Seller']
 
@@ -500,10 +502,13 @@ def install(app, workflow, action_handler, claim_handler):
             ws.append(row_vals)
 
         for row in ws.iter_rows(min_row=2, min_col=1, max_col=len(columns)):
-            for cell in row:
+            for col_idx, cell in enumerate(row, 1):
                 cell.font = data_font
                 cell.border = thin_border
                 cell.alignment = Alignment(vertical='center')
+                if col_idx in (1, 2, 3):  # code, customer, tracking
+                    cell.number_format = '@'
+                    cell.value = str(cell.value) if cell.value is not None else ''
 
         for col in ws.columns:
             max_len = max(len(str(cell.value or '')) for cell in col)

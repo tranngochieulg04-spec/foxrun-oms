@@ -681,7 +681,11 @@ def install(app, core, workflow):
                 f = Flow(order_id=oid, stage='REVIEW', version=0)
                 db.add(f)
                 db.flush()
-            # If ready or has tracking, transition to SHIPPED
+            # If ready or has tracking, transition to SHIPPED and deduct stock
+            if f.stage != 'SHIPPED':
+                import workflow as _wf
+                if hasattr(_wf, 'deduct_order_stock_for_shipping'):
+                    _wf.deduct_order_stock_for_shipping(db, o, f, user.username)
             f.stage = 'SHIPPED'
             f.version += 1
             f.updated_at = datetime.now(timezone.utc)

@@ -12,17 +12,50 @@ root = Path(__file__).resolve().parent
 os.chdir(root)
 
 # 1. Ưu tiên đọc biến môi trường DATABASE_URL
-raw_db_url = (os.getenv("DATABASE_URL") or os.environ.get("DATABASE_URL") or "").strip()
+def resolve_database_url() -> str:
+    candidates = ["DATABASE_URL", "DATABASE_URI", "POSTGRES_URL", "POSTGRESQL_URL"]
+    url = ""
+    for k in candidates:
+        v = (os.getenv(k) or os.environ.get(k) or "").strip()
+        if v:
+            url = v
+            break
 
-if raw_db_url:
-    # Chuẩn hóa postgres:// sang postgresql:// cho SQLAlchemy
-    if raw_db_url.startswith("postgres://"):
-        raw_db_url = raw_db_url.replace("postgres://", "postgresql://", 1)
+    # Nếu chưa có, kiểm tra các tệp bí mật Render / Secret Files
+    if not url:
+        secret_files = [
+            Path("/etc/secrets/DATABASE_URL"),
+            Path("/etc/secrets/.env"),
+            root / ".env",
+            root / "data" / ".env",
+        ]
+        for sf in secret_files:
+            try:
+                if sf.is_file():
+                    content = sf.read_text(encoding="utf-8").strip()
+                    if sf.name == "DATABASE_URL" and content:
+                        url = content
+                        break
+                    for line in content.splitlines():
+                        line = line.strip()
+                        if line.startswith("DATABASE_URL="):
+                            url = line.split("=", 1)[1].strip()
+                            break
+                    if url:
+                        break
+            except Exception:
+                pass
 
-    # Đảm bảo giữ sslmode=require khi kết nối tới Neon hoặc cloud database
-    if "sslmode=" not in raw_db_url and ("neon.tech" in raw_db_url or "supabase" in raw_db_url):
-        separator = "&" if "?" in raw_db_url else "?"
-        raw_db_url = f"{raw_db_url}{separator}sslmode=require"
+    url = url.strip().strip("'\"").strip()
+    if url:
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        if "sslmode=" not in url and ("neon.tech" in url or "supabase" in url or "render" in url):
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}sslmode=require"
+    return url
+
+raw_db_url = resolve_database_url()
 
     os.environ["DATABASE_URL"] = raw_db_url
     os.environ.setdefault("ADMIN_USERNAME", "admin")
