@@ -57,6 +57,7 @@ def resolve_database_url() -> str:
 
 raw_db_url = resolve_database_url()
 
+if raw_db_url:
     os.environ["DATABASE_URL"] = raw_db_url
     os.environ.setdefault("ADMIN_USERNAME", "admin")
     os.environ.setdefault("ADMIN_PASSWORD", "Foxrun@2026Admin")
